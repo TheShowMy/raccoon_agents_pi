@@ -1,5 +1,8 @@
 # 🦝 Raccoon Agents（浣熊特工队）
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Pi Package](https://img.shields.io/badge/Pi-Package-blue)](https://pi.dev)
+
 > ⚠️ **早期开发阶段** — 一个为 [Pi Coding Agent](https://pi.dev) 设计的多模型 Agent 编排扩展，旨在实现「需求讨论 → 自动开发 → 自动合并」的全流程自动化。
 
 ```
@@ -243,6 +246,8 @@ raccoon-agents/
 │   └── index.ts                # 扩展主逻辑（Agent 编排引擎）
 ├── package.json                # Pi Package 配置
 ├── tsconfig.json               # TypeScript 配置
+├── LICENSE                     # MIT 开源许可证
+├── CONTRIBUTING.md             # 贡献指南
 └── README.md                   # 本文件
 ```
 
@@ -293,9 +298,41 @@ npm start
    pi install https://github.com/<user>/<repo>
    ```
 
-## 许可证
+## 开源协议
 
-[MIT](./LICENSE)
+本项目采用 [MIT 许可证](./LICENSE) 开源。
+
+```
+MIT License
+
+Copyright (c) 2026 Raccoon Agents Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+```
+
+你可以自由使用、修改、分发本软件，包括商业用途。详细条款请参阅 [LICENSE](./LICENSE) 文件。
+
+## 贡献指南
+
+我们欢迎所有形式的贡献！请参阅 [CONTRIBUTING.md](./CONTRIBUTING.md) 了解如何参与：
+
+- 🐛 提交 Bug 报告
+- 💡 提出功能建议
+- 🔧 提交代码改进
+- 📝 完善文档
+
+## 社区与支持
+
+- 📦 [Pi Coding Agent](https://pi.dev) — 本扩展的运行平台
+- 💬 遇到问题？请在 GitHub Issues 中讨论
 
 ---
 
