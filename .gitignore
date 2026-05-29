@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime and temp files
+.DS_Store
+*.pid
+*.seed
+*.pid.lock
+tmp/
+temp/
+.tmp/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Build and test output
+dist/
+build/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# Package manager caches
+.npm/
+.pnpm-store/
+.yarn/
+!.yarn/releases/
+!.yarn/plugins/
+!.yarn/sdks/
+!.yarn/versions/
+
+# Pi local state
+.pi/
+
+# Local package artifacts
+*.tgz
