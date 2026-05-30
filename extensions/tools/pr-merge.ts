@@ -29,6 +29,10 @@ export function registerPrMergeTool(pi: ExtensionAPI): void {
             const method = params.method ?? 'squash';
             const skipReview = params.skipReview ?? false;
 
+            if (!(await isGitWorkTree(pi, cwd))) {
+                return fail('当前目录不是 Git 仓库。');
+            }
+
             // 审核强制检查：未审核且未明确跳过，则拒绝合并
             if (!skipReview) {
                 const state = getWorkflowState();
@@ -40,10 +44,6 @@ export function registerPrMergeTool(pi: ExtensionAPI): void {
                         '可在调用 `raccoon_pr_merge` 时设置 `skipReview: true` 明确跳过。',
                     );
                 }
-            }
-
-            if (!(await isGitWorkTree(pi, cwd))) {
-                return fail('当前目录不是 Git 仓库。');
             }
 
             const branch = await currentBranch(pi, cwd);
