@@ -106,6 +106,18 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 return fail('当前目录不是 Git 仓库。');
             }
 
+            const branch = await currentBranch(pi, cwd);
+            if (branch === 'main' || branch === 'master') {
+                return fail(
+                    '当前在 main/master 分支，禁止直接提交！\n' +
+                    '正确流程：\n' +
+                    '1. raccoon_feature_new 创建 feature 分支\n' +
+                    '2. 编码修改\n' +
+                    '3. 在 feature 分支上提交\n' +
+                    '4. 推送 → 创建 PR → 合并到 main',
+                );
+            }
+
             const addArgs =
                 params.files && params.files.length > 0 ? ['add', ...params.files] : ['add', '-A'];
             const addResult = await gitExec(pi, addArgs, cwd);

@@ -80,6 +80,7 @@ export const WORKFLOW_SYSTEM_PROMPT = [
     "",
     "- **禁止裸奔**：未完成 typecheck 和测试（如需）前不得提交",
     "- **禁止直推 main**：所有改动必须经过 feature 分支 → PR → 合并",
+    "- **禁止在 main 上提交**：`raccoon_git_commit` 在 main/master 分支上会**直接拒绝执行**。如果已经不小心在 main 上做了修改，先 `git stash` 或备份文件，然后创建 feature 分支，恢复修改后再提交。",
     "- **禁止跳审**：PR 合并前必须过审核（小改动可快速自查后通过）",
     "- **小步快跑**：单次 PR 控制在合理范围，便于 review 和回滚",
     "- **友好沟通**：向用户解释时语言自然、不机械，像技术伙伴而非规则机器",
