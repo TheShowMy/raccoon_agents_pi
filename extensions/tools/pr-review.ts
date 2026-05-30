@@ -2,6 +2,7 @@ import { Type } from 'typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { isGitWorkTree, detectGitHost } from '../git-utils.js';
 import { generateReviewReport, formatReviewFramework, formatDiffForReview } from '../code-review.js';
+import { runParallelReview, createReviewAgents, formatParallelReviewReport } from '../subagent.js';
 import { ok, fail, currentBranch } from './common.js';
 
 export function registerPrReviewTool(pi: ExtensionAPI): void {
@@ -9,9 +10,16 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
         name: 'raccoon_pr_review',
         label: '审核 PR/MR',
         description:
-            '获取当前分支对应 PR/MR 的详情（标题、描述、Diff、CI 状态），供 Agent 审核代码。支持 GitHub、GitLab。',
-        parameters: Type.Object({}),
-        async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+            '获取当前分支对应 PR/MR 的详情（标题、描述、Diff、CI 状态），并启动多模型并行审核。支持 GitHub、GitLab。',
+        parameters: Type.Object({
+            parallel: Type.Optional(
+                Type.Boolean({
+                    description: '是否启动多模型并行审核（默认 true）',
+                    default: true,
+                }),
+            ),
+        }),
+        async execute(_toolCallId, params, signal, _onUpdate, ctx) {
             const cwd = ctx.cwd;
 
             if (!(await isGitWorkTree(pi, cwd))) {
@@ -24,6 +32,9 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
             }
 
             const { host } = await detectGitHost(pi, cwd);
+
+            let prInfo: string[] = [];
+            let diffContent: string | null = null;
 
             if (host === 'github') {
                 const prListResult = await pi.exec(
@@ -39,7 +50,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                     return fail(`查询 PR 失败：${prListResult.stderr || prListResult.stdout}`);
                 }
 
-                interface GhPr {
+                let prs: Array<{
                     number: number;
                     title: string;
                     body: string;
@@ -48,9 +59,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                     headRefName: string;
                     baseRefName: string;
                     statusCheckRollup?: Array<{ name: string; status: string; conclusion: string }>;
-                }
-
-                let prs: GhPr[];
+                }>;
                 try {
                     prs = JSON.parse(prListResult.stdout);
                 } catch {
@@ -62,31 +71,30 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                 }
 
                 const pr = prs[0];
-                const lines: string[] = [];
-                lines.push(`## PR #${pr.number}: ${pr.title}`);
-                lines.push(`- 状态: ${pr.state}`);
-                lines.push(`- 分支: ${pr.headRefName} → ${pr.baseRefName}`);
-                lines.push(`- URL: ${pr.url}`);
+                prInfo.push(`## PR #${pr.number}: ${pr.title}`);
+                prInfo.push(`- 状态: ${pr.state}`);
+                prInfo.push(`- 分支: ${pr.headRefName} → ${pr.baseRefName}`);
+                prInfo.push(`- URL: ${pr.url}`);
                 if (pr.body) {
-                    lines.push('');
-                    lines.push('### 描述');
-                    lines.push(pr.body);
+                    prInfo.push('');
+                    prInfo.push('### 描述');
+                    prInfo.push(pr.body);
                 }
 
                 if (pr.statusCheckRollup && pr.statusCheckRollup.length > 0) {
-                    lines.push('');
-                    lines.push('### CI 检查');
+                    prInfo.push('');
+                    prInfo.push('### CI 检查');
                     for (const check of pr.statusCheckRollup) {
                         const icon =
                             check.conclusion === 'SUCCESS' ? '✅' :
                             check.conclusion === 'FAILURE' ? '❌' :
                             check.conclusion === 'NEUTRAL' ? '⚪' : '⏳';
-                        lines.push(`- ${icon} ${check.name}: ${check.status}${check.conclusion ? ` (${check.conclusion})` : ''}`);
+                        prInfo.push(`- ${icon} ${check.name}: ${check.status}${check.conclusion ? ` (${check.conclusion})` : ''}`);
                     }
                 } else {
-                    lines.push('');
-                    lines.push('### CI 检查');
-                    lines.push('- 无 CI 检查数据');
+                    prInfo.push('');
+                    prInfo.push('### CI 检查');
+                    prInfo.push('- 无 CI 检查数据');
                 }
 
                 const diffResult = await pi.exec(
@@ -96,17 +104,9 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                 );
 
                 if (diffResult.code === 0 && diffResult.stdout.trim()) {
-                    const report = generateReviewReport(diffResult.stdout);
-                    lines.push(formatReviewFramework(report));
-                    lines.push('');
-                    lines.push('### Diff（代码供审核参考）');
-                    lines.push(formatDiffForReview(diffResult.stdout, 300));
+                    diffContent = diffResult.stdout;
                 }
-
-                return ok(lines.join('\n'));
-            }
-
-            if (host === 'gitlab') {
+            } else if (host === 'gitlab') {
                 const mrListResult = await pi.exec(
                     'glab',
                     ['mr', 'list', '--source-branch', branch, '--state', 'opened', '--output', 'json'],
@@ -117,7 +117,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                     return fail(`查询 MR 失败：${mrListResult.stderr || mrListResult.stdout}`);
                 }
 
-                interface GlMr {
+                let mrs: Array<{
                     iid: number;
                     title: string;
                     description: string;
@@ -126,9 +126,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                     source_branch: string;
                     target_branch: string;
                     detailed_merge_status?: string;
-                }
-
-                let mrs: GlMr[];
+                }>;
                 try {
                     mrs = JSON.parse(mrListResult.stdout);
                 } catch {
@@ -140,18 +138,17 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                 }
 
                 const mr = mrs[0];
-                const lines: string[] = [];
-                lines.push(`## MR !${mr.iid}: ${mr.title}`);
-                lines.push(`- 状态: ${mr.state}`);
-                lines.push(`- 分支: ${mr.source_branch} → ${mr.target_branch}`);
-                lines.push(`- URL: ${mr.web_url}`);
+                prInfo.push(`## MR !${mr.iid}: ${mr.title}`);
+                prInfo.push(`- 状态: ${mr.state}`);
+                prInfo.push(`- 分支: ${mr.source_branch} → ${mr.target_branch}`);
+                prInfo.push(`- URL: ${mr.web_url}`);
                 if (mr.detailed_merge_status) {
-                    lines.push(`- 合并状态: ${mr.detailed_merge_status}`);
+                    prInfo.push(`- 合并状态: ${mr.detailed_merge_status}`);
                 }
                 if (mr.description) {
-                    lines.push('');
-                    lines.push('### 描述');
-                    lines.push(mr.description);
+                    prInfo.push('');
+                    prInfo.push('### 描述');
+                    prInfo.push(mr.description);
                 }
 
                 const diffResult = await pi.exec(
@@ -161,27 +158,57 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                 );
 
                 if (diffResult.code === 0 && diffResult.stdout.trim()) {
-                    const report = generateReviewReport(diffResult.stdout);
-                    lines.push(formatReviewFramework(report));
-                    lines.push('');
-                    lines.push('### Diff（代码供审核参考）');
-                    lines.push(formatDiffForReview(diffResult.stdout, 300));
+                    diffContent = diffResult.stdout;
                 }
-
-                return ok(lines.join('\n'));
-            }
-
-            if (host === 'gitee') {
+            } else if (host === 'gitee') {
                 return fail(
                     '暂不支持通过工具自动获取 Gitee PR 详情。\n' +
                         '请前往 Gitee 网站手动查看 Pull Request。',
                 );
+            } else {
+                return fail(
+                    `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
+                        '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
+                );
             }
 
-            return fail(
-                `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
-                    '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
-            );
+            // 构建返回内容
+            const lines: string[] = [...prInfo];
+
+            if (diffContent) {
+                // 1. 自动分析 diff
+                const report = generateReviewReport(diffContent);
+                lines.push(formatReviewFramework(report));
+                lines.push('');
+
+                // 2. 多模型并行审核（如果启用）
+                const enableParallel = params.parallel !== false;
+                if (enableParallel) {
+                    const agents = createReviewAgents();
+                    const agentList = [agents.logicAgent, agents.maintainAgent, agents.scanAgent].filter(
+                        (a) => a.model, // 只使用有模型配置的 agent
+                    );
+
+                    if (agentList.length >= 2) {
+                        lines.push('⏳ 正在启动多模型并行审核...');
+                        lines.push('');
+
+                        const reviewResult = await runParallelReview(cwd, agentList, diffContent, signal);
+                        lines.push(formatParallelReviewReport(reviewResult));
+                        lines.push('');
+                    } else {
+                        lines.push('⚠️ 并行审核需要至少 2 个档位有模型配置，当前不满足。');
+                        lines.push('请用 `raccoon_model_scan` 和 `raccoon_model_config` 配置各档位模型。');
+                        lines.push('');
+                    }
+                }
+
+                // 3. Diff 参考
+                lines.push('### Diff（代码供审核参考）');
+                lines.push(formatDiffForReview(diffContent, 300));
+            }
+
+            return ok(lines.join('\n'));
         },
     });
 }
