@@ -74,7 +74,7 @@ export function loadAgentFromFile(filePath: string): AgentConfig | null {
  * 解析 YAML frontmatter，支持多行缩进值
  * 注：不支持 YAML 数组语法（- item）和嵌套对象
  */
-function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
+export function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
     const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
     if (!match) return { frontmatter: {}, body: content };
 
@@ -288,7 +288,7 @@ function createSecureTmpDir(): string {
     return dir;
 }
 
-function sanitizeFilename(name: string): string {
+export function sanitizeFilename(name: string): string {
     return name.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
