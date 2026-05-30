@@ -71,22 +71,36 @@ staged 0  unstaged 0  untracked 0  conflicts 0   raccoon-agents  anthropic/claud
 | `raccoon_git_push` | 推送当前分支到 origin，自动设置 upstream，禁止直接推 main |
 | `raccoon_issue_create` | 创建 Git Issue，支持标题、描述和标签，自动适配平台 |
 | `raccoon_issue_list` | 列出最近的开放 Issue，支持按标签筛选 |
-| `raccoon_issue_breakdown` | 读取 Issue 详情并提供任务拆分框架（前端/后端/测试/文档/部署） |
+| `raccoon_issue_breakdown` | 读取 Issue 详情并提供任务拆分框架（前端/后端/测试/文档/部署），含模型档位推荐 |
+| `raccoon_model_config` | 设置/查看/删除模型档位（high/medium/low），支持自动路由 |
+| `raccoon_model_list` | 列出所有模型档位配置，按档位分组，显示当前模型 |
 | `raccoon_pr_create` | 创建 Pull Request / Merge Request，自动检测平台（GitHub `gh` / GitLab `glab`） |
 
-### 3. 工作流 Prompt 注入
+### 3. 模型档位与自动路由
 
-在 Agent 启动前，自动向 system prompt 末尾追加标准化工作流说明：
+支持为模型设置 **high（高档）/ medium（中档）/ low（低档）** 三档：
 
+| 任务类型 | 推荐档位 | 说明 |
+|---------|---------|------|
+| 后端/API、架构设计 | 高档 | 推理能力强，处理复杂逻辑 |
+| 前端/UI、文档 | 中档 | 代码生成或长文本能力 |
+| 测试、配置/部署 | 低档 | 快速轻量，成本最优 |
+
+**路由规则**：
+- `raccoon_issue_breakdown` 自动按任务类型推荐档位，列出该档位可用模型
+- 若推荐档位无配置模型，**自动 fallback 到更高档**
+- 若当前模型档位与推荐档位不匹配，提示用户切换模型
+
+**管理命令**：
 ```
-1. 需求理解 — 用 raccoon_project_info 了解项目状态
-2. 创建分支 — 用 raccoon_feature_new 创建 feat/<功能名> 分支
-3. 实现代码 — 使用 read/write/edit 修改文件
-4. 验证 — 运行 npm run typecheck 确保编译通过
-5. 提交 — 用 raccoon_git_commit 提交（conventional commits）
-6. 推送 — 用 raccoon_git_push 推送分支
-7. 创建 PR — 用 raccoon_pr_create 创建 PR
+raccoon_model_list                          # 查看所有模型档位
+raccoon_model_config action=set model=xxx tier=high   # 设置档位
+raccoon_model_config action=remove model=xxx          # 删除档位
 ```
+
+### 4. 工作流 Prompt 注入
+
+在 Agent 启动前，自动向 system prompt 末尾追加标准化工作流说明，含 10 步流程 + 模型档位路由策略。
 
 ### 4. 非 Git 仓库自动提示
 
@@ -174,8 +188,9 @@ raccoon-agents/
 ├── extensions/
 │   ├── index.ts                # 扩展主入口：UI 安装、事件监听、工具注册
 │   ├── project-info.ts         # raccoon_project_info 工具实现
-│   ├── git-workflow.ts         # 4 个 Git 工作流工具实现
+│   ├── git-workflow.ts         # 12 个 Git/PR/Issue/模型 工作流工具实现
 │   ├── git-utils.ts            # Git 工具函数（状态解析、命令执行）
+│   ├── model-tier.ts           # 模型档位配置与自动路由引擎
 │   └── workflow-prompt.ts      # 工作流 system prompt 模板
 ├── .pre-commit-config.yaml     # Pre-commit 代码质量检查配置
 ├── .prettierrc                 # Prettier 代码格式化配置
@@ -217,7 +232,7 @@ npm start
 -   [x] 支持多种 Git 托管平台（GitLab `glab` / Gitee 提示）
 -   [x] 需求 → Issue 自动转换（`raccoon_issue_create` / `raccoon_issue_list`）
 -   [x] Issue 智能任务拆分（`raccoon_issue_breakdown`）
--   [x] 多模型任务分配与并行编排（在 `raccoon_issue_breakdown` 中推荐模型 + 工作流 prompt 指导）
+-   [x] 多模型任务分配与并行编排（`raccoon_model_config` / `raccoon_model_list` + 档位自动路由 + fallback）
 
 ## 作为 Pi Package 分发
 
