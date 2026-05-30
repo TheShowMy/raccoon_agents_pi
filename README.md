@@ -217,7 +217,7 @@ npm start
 -   [x] 支持多种 Git 托管平台（GitLab `glab` / Gitee 提示）
 -   [x] 需求 → Issue 自动转换（`raccoon_issue_create` / `raccoon_issue_list`）
 -   [x] Issue 智能任务拆分（`raccoon_issue_breakdown`）
--   [ ] 多模型任务分配与并行编排
+-   [x] 多模型任务分配与并行编排（在 `raccoon_issue_breakdown` 中推荐模型 + 工作流 prompt 指导）
 
 ## 作为 Pi Package 分发
 
