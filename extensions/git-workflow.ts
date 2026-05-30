@@ -4,6 +4,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -37,7 +38,32 @@ function ok(text: string) {
 }
 
 function fail(text: string) {
-    return { content: [{ type: 'text' as const, text: `❌ ${text}` }], details: {} };
+    return { content: [{ type: 'text' as const, text: `❌ ${sanitizeOutput(text)}` }], details: {} };
+}
+
+/** 清理命令输出中的敏感信息 */
+function sanitizeOutput(output: string): string {
+    const lines = output.split('\n');
+    const cleaned: string[] = [];
+    for (const line of lines) {
+        const lower = line.toLowerCase();
+        // 过滤可能包含密钥/令牌的行
+        if (/(token|secret|key|password|credential|auth).*[:=]/i.test(line)) {
+            cleaned.push('[敏感信息已过滤]');
+            continue;
+        }
+        // 过滤路径中的 home 目录
+        if (line.includes(homedir())) {
+            cleaned.push(line.replaceAll(homedir(), '~'));
+            continue;
+        }
+        cleaned.push(line);
+    }
+    // 截断过长输出
+    if (cleaned.length > 30) {
+        return cleaned.slice(0, 15).join('\n') + '\n...（省略 ' + (cleaned.length - 30) + ' 行）...\n' + cleaned.slice(-15).join('\n');
+    }
+    return cleaned.join('\n');
 }
 
 // ── 注册入口 ──────────────────────────────────────────────
@@ -69,7 +95,15 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 );
             }
 
+            const BRANCH_NAME_REGEX = /^[a-zA-Z0-9_-]+$/;
+            if (!BRANCH_NAME_REGEX.test(params.name)) {
+                return fail(
+                    `功能名 "${params.name}" 包含非法字符。只允许字母、数字、下划线和连字符。`,
+                );
+            }
+
             const branch = `feat/${params.name}`;
+            const originalBranch = await currentBranch(pi, cwd); // 保存原分支名（必须在 checkout main 之前！）
 
             const checkoutMain = await gitExec(pi, ['checkout', 'main'], cwd);
             if (checkoutMain.code !== 0) {
@@ -78,8 +112,11 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
             const create = await gitExec(pi, ['checkout', '-b', branch], cwd);
             if (create.code !== 0) {
-                await gitExec(pi, ['checkout', '-'], cwd);
-                return fail(`创建分支 ${branch} 失败：${create.stderr || create.stdout}`);
+                // 切回原来的分支，而不是依赖 checkout -
+                if (originalBranch) {
+                    await gitExec(pi, ['checkout', originalBranch], cwd);
+                }
+                return fail(`创建分支 ${branch} 失败：${sanitizeOutput(create.stderr || create.stdout)}`);
             }
 
             return ok(`✅ 已创建并切换到分支 ${branch}\n工作区干净，可以开始开发。`);
