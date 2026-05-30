@@ -15,7 +15,7 @@ const NO_PARAMS = Type.Object({});
 export function registerProjectInfoTool(pi: ExtensionAPI): void {
     pi.registerTool({
         name: 'raccoon_project_info',
-        label: 'Project Info',
+        label: '项目信息',
         description: '展示当前项目工作区概览：分支、Git 状态、package.json 信息',
         parameters: NO_PARAMS,
         async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
@@ -41,7 +41,7 @@ export function registerProjectInfoTool(pi: ExtensionAPI): void {
             if (status.unstaged > 0) dirtyParts.push(`未暂存 ${status.unstaged}`);
             if (status.untracked > 0) dirtyParts.push(`未跟踪 ${status.untracked}`);
             if (status.conflicts > 0) dirtyParts.push(`冲突 ${status.conflicts}`);
-            lines.push(`- 状态: ${dirtyParts.length > 0 ? dirtyParts.join(' / ') : 'clean'}`);
+            lines.push(`- 状态: ${dirtyParts.length > 0 ? dirtyParts.join(' / ') : '干净'}`);
 
             // 2. 是否有未推送提交
             if (status.upstream) {
