@@ -8,8 +8,8 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync, mkdirSync, unlinkSync, rmdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, dirname } from "node:path";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
 
 // ── 类型定义 ──────────────────────────────────────────────
 
@@ -27,6 +27,7 @@ export interface SingleResult {
     stdout: string;
     stderr: string;
     model?: string;
+    timedOut: boolean;
 }
 
 export interface ParallelReviewResult {
@@ -35,11 +36,22 @@ export interface ParallelReviewResult {
     failCount: number;
 }
 
-// ── Agent 发现 ──────────────────────────────────────────────
-
-function getProjectAgentsDir(cwd: string): string {
-    return join(cwd, ".pi", "agents");
+export interface ParallelReviewOptions {
+    /** 单个子进程超时（毫秒），默认 60000 */
+    timeout?: number;
+    /** 最大并发数，默认 3 */
+    concurrency?: number;
+    /** 流式进度回调 */
+    onUpdate?: (agentName: string, chunk: string) => void;
+    /** 外部取消信号 */
+    signal?: AbortSignal;
+    /** 单个 agent 开始执行时回调 */
+    onTaskStart?: (agentName: string) => void;
+    /** 单个 agent 执行结束时回调 */
+    onTaskEnd?: (agentName: string, success: boolean) => void;
 }
+
+// ── Agent 发现（供外部使用，保留） ──────────────────────────────────────────────
 
 export function loadAgentFromFile(filePath: string): AgentConfig | null {
     if (!existsSync(filePath)) return null;
@@ -58,17 +70,43 @@ export function loadAgentFromFile(filePath: string): AgentConfig | null {
     }
 }
 
-function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
+/**
+ * 解析 YAML frontmatter，支持多行缩进值
+ * 注：不支持 YAML 数组语法（- item）和嵌套对象
+ */
+export function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
     const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
     if (!match) return { frontmatter: {}, body: content };
 
     const frontmatter: Record<string, string> = {};
-    for (const line of match[1].split("\n")) {
-        const colonIdx = line.indexOf(":");
-        if (colonIdx > 0) {
-            frontmatter[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim();
+    const lines = match[1].split("\n");
+    let currentKey: string | null = null;
+    let currentValue: string[] = [];
+
+    const flush = () => {
+        if (currentKey !== null) {
+            frontmatter[currentKey] = currentValue.join("\n").trim();
+            currentKey = null;
+            currentValue = [];
+        }
+    };
+
+    for (const line of lines) {
+        const keyMatch = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
+        if (keyMatch) {
+            flush();
+            currentKey = keyMatch[1];
+            const val = keyMatch[2].trim();
+            if (val) currentValue.push(val);
+        } else if (currentKey !== null && line.startsWith(" ")) {
+            // 多行值缩进
+            currentValue.push(line.trimStart());
+        } else if (currentKey !== null) {
+            currentValue.push(line);
         }
     }
+    flush();
+
     return { frontmatter, body: match[2] };
 }
 
@@ -102,7 +140,7 @@ async function runSingleAgent(
     cwd: string,
     agent: AgentConfig,
     task: string,
-    signal?: AbortSignal,
+    options?: ParallelReviewOptions,
 ): Promise<SingleResult> {
     const result: SingleResult = {
         agent: agent.name,
@@ -111,8 +149,10 @@ async function runSingleAgent(
         stdout: "",
         stderr: "",
         model: agent.model,
+        timedOut: false,
     };
 
+    const timeoutMs = options?.timeout ?? 60_000;
     const args: string[] = ["--mode", "json", "-p", "--no-session"];
     if (agent.model) args.push("--model", agent.model);
 
@@ -122,9 +162,8 @@ async function runSingleAgent(
     try {
         // 将 system prompt 写入临时文件
         if (agent.systemPrompt.trim()) {
-            tmpDir = join(tmpdir(), `pi-review-${Date.now()}`);
-            mkdirSync(tmpDir, { recursive: true });
-            tmpPromptPath = join(tmpDir, `agent-${agent.name}.md`);
+            tmpDir = createSecureTmpDir();
+            tmpPromptPath = join(tmpDir, `agent-${sanitizeFilename(agent.name)}.md`);
             writeFileSync(tmpPromptPath, agent.systemPrompt, { encoding: "utf-8", mode: 0o600 });
             args.push("--append-system-prompt", tmpPromptPath);
         }
@@ -132,71 +171,37 @@ async function runSingleAgent(
         args.push(`Task: ${task}`);
 
         const invocation = getPiInvocation(args);
-        const exitCode = await new Promise<number>((resolve) => {
-            const proc = spawn(invocation.command, invocation.args, {
-                cwd,
-                shell: false,
-                stdio: ["ignore", "pipe", "pipe"],
-            });
-
-            let buffer = "";
-
-            proc.stdout.on("data", (data) => {
-                buffer += data.toString();
-                const lines = buffer.split("\n");
-                buffer = lines.pop() || "";
-                for (const line of lines) {
-                    if (!line.trim()) continue;
-                    try {
-                        const event = JSON.parse(line);
-                        if (event.type === "message_end" && event.message?.role === "assistant") {
-                            for (const part of event.message.content) {
-                                if (part.type === "text") {
-                                    result.stdout = part.text;
+        const { exitCode, stdout, stderr, timedOut } = await spawnWithTimeout(
+            invocation.command,
+            invocation.args,
+            { cwd, timeout: timeoutMs, signal: options?.signal },
+            (chunk) => {
+                // 流式解析 JSON 行，提取 assistant 消息文本
+                try {
+                    const event = JSON.parse(chunk);
+                    if (event.type === "message_end" && event.message?.role === "assistant") {
+                        for (const part of event.message.content) {
+                            if (part.type === "text") {
+                                result.stdout += part.text;
+                                // 流式回调
+                                if (options?.onUpdate) {
+                                    options.onUpdate(agent.name, part.text);
                                 }
                             }
                         }
-                    } catch {
-                        // 非 JSON 行，忽略
+                    }
+                } catch {
+                    // 非 JSON 行，可能是一般输出，记录到 stderr
+                    if (chunk.trim() && !chunk.trim().startsWith("{")) {
+                        result.stderr += chunk + "\n";
                     }
                 }
-            });
-
-            proc.stderr.on("data", (data) => {
-                result.stderr += data.toString();
-            });
-
-            proc.on("close", (code) => {
-                if (buffer.trim()) {
-                    try {
-                        const event = JSON.parse(buffer);
-                        if (event.type === "message_end" && event.message?.role === "assistant") {
-                            for (const part of event.message.content) {
-                                if (part.type === "text") {
-                                    result.stdout = part.text;
-                                }
-                            }
-                        }
-                    } catch { /* ignore */ }
-                }
-                resolve(code ?? 0);
-            });
-
-            proc.on("error", () => resolve(1));
-
-            if (signal) {
-                const killProc = () => {
-                    proc.kill("SIGTERM");
-                    setTimeout(() => {
-                        if (!proc.killed) proc.kill("SIGKILL");
-                    }, 5000);
-                };
-                if (signal.aborted) killProc();
-                else signal.addEventListener("abort", killProc, { once: true });
-            }
-        });
+            },
+        );
 
         result.exitCode = exitCode;
+        result.timedOut = timedOut;
+        result.stderr += stderr;
     } finally {
         if (tmpPromptPath) {
             try { unlinkSync(tmpPromptPath); } catch { /* ignore */ }
@@ -207,6 +212,84 @@ async function runSingleAgent(
     }
 
     return result;
+}
+
+/**
+ * 带超时的子进程执行，支持流式输出
+ */
+function spawnWithTimeout(
+    command: string,
+    args: string[],
+    options: { cwd: string; timeout: number; signal?: AbortSignal },
+    onLine: (line: string) => void,
+): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
+    return new Promise((resolve) => {
+        let stdout = "";
+        let stderr = "";
+        let buffer = "";
+        let timedOut = false;
+
+        const proc = spawn(command, args, {
+            cwd: options.cwd,
+            shell: false,
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+
+        const killProc = (isTimeout = false) => {
+            if (isTimeout) timedOut = true;
+            proc.kill("SIGTERM");
+            setTimeout(() => {
+                if (!proc.killed) proc.kill("SIGKILL");
+            }, 5000);
+        };
+
+        const timeoutTimer = setTimeout(() => killProc(true), options.timeout);
+
+        proc.stdout.on("data", (data) => {
+            stdout += data.toString();
+            buffer += data.toString();
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) {
+                if (line.trim()) onLine(line);
+            }
+        });
+
+        proc.stderr.on("data", (data) => {
+            stderr += data.toString();
+        });
+
+        proc.on("close", (code) => {
+            clearTimeout(timeoutTimer);
+            if (buffer.trim()) onLine(buffer);
+            resolve({ exitCode: code ?? 0, stdout, stderr, timedOut });
+        });
+
+        proc.on("error", (err) => {
+            clearTimeout(timeoutTimer);
+            stderr += err.message;
+            resolve({ exitCode: 1, stdout, stderr, timedOut });
+        });
+
+        if (options.signal) {
+            const onAbort = () => {
+                clearTimeout(timeoutTimer);
+                killProc(false);
+            };
+            if (options.signal.aborted) onAbort();
+            else options.signal.addEventListener("abort", onAbort, { once: true });
+        }
+    });
+}
+
+function createSecureTmpDir(): string {
+    const dir = join(tmpdir(), `pi-review-${Date.now()}-${randomBytes(4).toString("hex")}`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    return dir;
+}
+
+export function sanitizeFilename(name: string): string {
+    return name.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
@@ -231,11 +314,10 @@ export async function runParallelReview(
     cwd: string,
     agents: AgentConfig[],
     diffContent: string,
-    signal?: AbortSignal,
+    options?: ParallelReviewOptions,
 ): Promise<ParallelReviewResult> {
     // 将 diff 写入临时文件，供所有 agent 读取
-    const tmpDir = join(tmpdir(), `pi-review-diff-${Date.now()}`);
-    mkdirSync(tmpDir, { recursive: true });
+    const tmpDir = createSecureTmpDir();
     const diffPath = join(tmpDir, "pr-diff.patch");
     writeFileSync(diffPath, diffContent, { encoding: "utf-8", mode: 0o600 });
 
@@ -247,14 +329,20 @@ export async function runParallelReview(
     }));
 
     try {
+        const concurrency = options?.concurrency ?? 3;
         const results = await mapWithConcurrencyLimit(
             tasks,
-            3, // 最多 3 个并发
-            async (t) => runSingleAgent(cwd, t.agent, t.task, signal),
+            concurrency,
+            async (t) => {
+                options?.onTaskStart?.(t.agent.name);
+                const result = await runSingleAgent(cwd, t.agent, t.task, options);
+                options?.onTaskEnd?.(t.agent.name, result.exitCode === 0 && !result.timedOut);
+                return result;
+            },
         );
 
-        const successCount = results.filter((r) => r.exitCode === 0).length;
-        const failCount = results.filter((r) => r.exitCode !== 0).length;
+        const successCount = results.filter((r) => r.exitCode === 0 && !r.timedOut).length;
+        const failCount = results.filter((r) => r.exitCode !== 0 || r.timedOut).length;
 
         return { results, successCount, failCount };
     } finally {
@@ -278,9 +366,9 @@ export function createReviewAgents(): ReviewAgents {
     const tierConfig = loadTierConfig();
 
     // 从各档位获取一个模型
-    const { tier: highTier, models: highModels } = routeModel(tierConfig, "high");
-    const { tier: mediumTier, models: mediumModels } = routeModel(tierConfig, "medium");
-    const { tier: lowTier, models: lowModels } = routeModel(tierConfig, "low");
+    const { models: highModels } = routeModel(tierConfig, "high");
+    const { models: mediumModels } = routeModel(tierConfig, "medium");
+    const { models: lowModels } = routeModel(tierConfig, "low");
 
     const highModel = highModels[0];
     const mediumModel = mediumModels[0];
@@ -397,10 +485,12 @@ export function formatParallelReviewReport(result: ParallelReviewResult): string
     lines.push("");
 
     for (const r of result.results) {
-        const icon = r.exitCode === 0 ? "✅" : "❌";
+        const icon = r.timedOut ? "⏱️" : r.exitCode === 0 ? "✅" : "❌";
         lines.push(`${icon} **${r.agent}** ${r.model ? `(${r.model})` : ""}`);
 
-        if (r.exitCode !== 0) {
+        if (r.timedOut) {
+            lines.push(`  执行超时（可能模型响应过慢或任务过大）`);
+        } else if (r.exitCode !== 0) {
             lines.push(`  执行失败（退出码 ${r.exitCode}）`);
             if (r.stderr) {
                 lines.push(`  stderr: ${r.stderr.slice(0, 200)}`);

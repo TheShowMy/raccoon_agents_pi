@@ -68,9 +68,17 @@ export function getModelTier(config: TierConfig, modelId: string): ModelTier | n
     }
     for (const [key, tier] of Object.entries(config.models)) {
         // 只支持 modelId 以 key 为前缀的匹配（如 provider 级别匹配）
-        // 禁止 key.startsWith(modelId) 避免短名称错误匹配长名称
+        // 避免 openai 匹配到 openai-compatible/xxx：
+        // - 若 key 本身以 / 或 - 结尾，说明 key 是完整前缀段，允许匹配
+        // - 否则要求 modelId 在 key 后紧跟 / 或结束，确保不跨段匹配
         if (modelId.startsWith(key)) {
-            return tier;
+            if (key.endsWith('/') || key.endsWith('-')) {
+                return tier;
+            }
+            const nextChar = modelId[key.length];
+            if (nextChar === undefined || nextChar === '/') {
+                return tier;
+            }
         }
     }
     return null;

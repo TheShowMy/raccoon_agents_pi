@@ -33,6 +33,31 @@ describe('getModelTier', () => {
         expect(getModelTier(config, 'openai')).toBeNull();
     });
 
+    it('前缀匹配边界：openai/ 不应匹配 openai-compatible/', () => {
+        const config: TierConfig = {
+            models: { 'openai/': 'high' },
+        };
+        expect(getModelTier(config, 'openai/gpt-4o')).toBe('high');
+        expect(getModelTier(config, 'openai-compatible/gpt-4o')).toBeNull();
+    });
+
+    it('前缀匹配边界：key 以 - 结尾时应允许匹配', () => {
+        const config: TierConfig = {
+            models: { 'openai-': 'high' },
+        };
+        expect(getModelTier(config, 'openai-compatible/gpt-4o')).toBe('high');
+    });
+
+    it('非前缀分隔符不应误匹配', () => {
+        const config: TierConfig = {
+            models: { 'openai': 'high' },
+        };
+        // openai 后紧跟 /，是完整前缀段，应匹配
+        expect(getModelTier(config, 'openai/gpt-4o')).toBe('high');
+        // openai 后紧跟 -，不是 / 分隔符，不应误匹配
+        expect(getModelTier(config, 'openai-compatible/gpt-4o')).toBeNull();
+    });
+
     it('未配置返回 null', () => {
         const config: TierConfig = { models: {} };
         expect(getModelTier(config, 'openai/gpt-4o')).toBeNull();

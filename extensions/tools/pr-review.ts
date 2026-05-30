@@ -3,6 +3,7 @@ import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { isGitWorkTree, detectGitHost } from '../git-utils.js';
 import { generateReviewReport, formatReviewFramework, formatDiffForReview } from '../code-review.js';
 import { runParallelReview, createReviewAgents, formatParallelReviewReport } from '../subagent.js';
+import { addParallelTask, finishParallelTask } from '../workflow-ui.js';
 import { ok, fail, currentBranch } from './common.js';
 
 export function registerPrReviewTool(pi: ExtensionAPI): void {
@@ -19,7 +20,7 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                 }),
             ),
         }),
-        async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+        async execute(_toolCallId, params, signal, onUpdate, ctx) {
             const cwd = ctx.cwd;
 
             if (!(await isGitWorkTree(pi, cwd))) {
@@ -193,7 +194,25 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                         lines.push('⏳ 正在启动多模型并行审核...');
                         lines.push('');
 
-                        const reviewResult = await runParallelReview(cwd, agentList, diffContent, signal);
+                        const taskIds = new Map<string, string>();
+                        const reviewResult = await runParallelReview(cwd, agentList, diffContent, {
+                            signal,
+                            onUpdate: (agentName, chunk) => {
+                                if (onUpdate) {
+                                    onUpdate({
+                                        content: [{ type: 'text' as const, text: `🔍 ${agentName} 审核中...\n${chunk.slice(0, 500)}` }],
+                                        details: {},
+                                    });
+                                }
+                            },
+                            onTaskStart: (agentName) => {
+                                taskIds.set(agentName, addParallelTask(agentName, 'review'));
+                            },
+                            onTaskEnd: (agentName, success) => {
+                                const id = taskIds.get(agentName);
+                                if (id) finishParallelTask(id, success);
+                            },
+                        });
                         lines.push(formatParallelReviewReport(reviewResult));
                         lines.push('');
                     } else {
