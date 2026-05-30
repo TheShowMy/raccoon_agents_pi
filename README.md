@@ -71,6 +71,7 @@ staged 0  unstaged 0  untracked 0  conflicts 0   raccoon-agents  anthropic/claud
 | `raccoon_git_push` | 推送当前分支到 origin，自动设置 upstream，禁止直接推 main |
 | `raccoon_issue_create` | 创建 Git Issue，支持标题、描述和标签，自动适配平台 |
 | `raccoon_issue_list` | 列出最近的开放 Issue，支持按标签筛选 |
+| `raccoon_issue_breakdown` | 读取 Issue 详情并提供任务拆分框架（前端/后端/测试/文档/部署） |
 | `raccoon_pr_create` | 创建 Pull Request / Merge Request，自动检测平台（GitHub `gh` / GitLab `glab`） |
 
 ### 3. 工作流 Prompt 注入
@@ -211,11 +212,11 @@ npm start
 -   [x] Git 推送工具（`raccoon_git_push`）
 -   [x] PR 创建工具（`raccoon_pr_create`）
 -   [x] 工作流 prompt 自动注入
--   [ ] 自动测试运行与质量门禁
--   [ ] PR 自动合并
+-   [x] 自动测试运行与质量门禁（`raccoon_run_test`）
+-   [x] PR 自动合并（`raccoon_pr_merge`）
 -   [x] 支持多种 Git 托管平台（GitLab `glab` / Gitee 提示）
 -   [x] 需求 → Issue 自动转换（`raccoon_issue_create` / `raccoon_issue_list`）
--   [ ] Issue 智能任务拆分
+-   [x] Issue 智能任务拆分（`raccoon_issue_breakdown`）
 -   [ ] 多模型任务分配与并行编排
 
 ## 作为 Pi Package 分发
