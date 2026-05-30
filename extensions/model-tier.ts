@@ -49,7 +49,7 @@ export function loadTierConfig(): TierConfig {
 
 export function saveTierConfig(config: TierConfig): void {
     ensureConfigDir();
-    writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 4) + '\n', 'utf-8');
+    writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 4) + '\n', { encoding: 'utf-8', mode: 0o600 });
 }
 
 /** 从 Pi ModelRegistry 获取所有已配置模型（含内置） */
@@ -67,7 +67,9 @@ export function getModelTier(config: TierConfig, modelId: string): ModelTier | n
         return config.models[modelId];
     }
     for (const [key, tier] of Object.entries(config.models)) {
-        if (modelId.startsWith(key) || key.startsWith(modelId)) {
+        // 只支持 modelId 以 key 为前缀的匹配（如 provider 级别匹配）
+        // 禁止 key.startsWith(modelId) 避免短名称错误匹配长名称
+        if (modelId.startsWith(key)) {
             return tier;
         }
     }

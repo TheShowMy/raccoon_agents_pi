@@ -102,8 +102,21 @@ function fitLine(left: string, right: string, width: number): string {
     return truncateToWidth(`${leftText}${' '.repeat(gap)}${rightText}`, width);
 }
 
+function sanitizeError(detail: string): string {
+    const lines = detail.split(/\r?\n/);
+    const cleaned: string[] = [];
+    for (const line of lines) {
+        if (/\b(token|secret|key|password|credential|auth)\b.*[:=]/i.test(line)) {
+            cleaned.push('[敏感信息已过滤]');
+            continue;
+        }
+        cleaned.push(line);
+    }
+    return cleaned.join('\n');
+}
+
 function formatCommandError(label: string, result: CommandResult): string {
-    const detail = (result.stderr || result.stdout).trim().split(/\r?\n/).slice(-6).join('\n');
+    const detail = sanitizeError((result.stderr || result.stdout).trim()).split(/\r?\n/).slice(-6).join('\n');
     return `${label} 执行失败，退出码 ${result.code}${detail ? `\n${detail}` : ''}`;
 }
 
