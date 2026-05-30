@@ -12,6 +12,7 @@ import {
 } from './git-utils.js';
 import { registerGitWorkflowTools } from './git-workflow.js';
 import { registerProjectInfoTool } from './project-info.js';
+import { installWorkflowUI } from './workflow-ui.js';
 import { WORKFLOW_SYSTEM_PROMPT } from './workflow-prompt.js';
 
 
@@ -30,30 +31,32 @@ let guardStarted = false;
 let gitFooterController: GitFooterController | undefined;
 
 
-function headerLines(theme: Theme): string[] {
+function headerLines(theme: Theme, width: number): string[] {
     const accent = (text: string) => theme.fg('accent', text);
     const muted = (text: string) => theme.fg('muted', text);
     const dim = (text: string) => theme.fg('dim', text);
+    const border = (text: string) => theme.fg('borderAccent', text);
 
-    return [
-        '',
-        accent('      ██╗  ██╗ █████╗  ██████╗ ██████╗ ██████╗ ███╗   ██╗'),
-        accent('      ██║  ██║██╔══██╗██╔════╝██╔════╝██╔═══██╗████╗  ██║'),
-        accent('      ███████║███████║██║     ██║     ██║   ██║██╔██╗ ██║'),
-        accent('      ██╔══██║██╔══██║██║     ██║     ██║   ██║██║╚██╗██║'),
-        accent('      ██║  ██║██║  ██║╚██████╗╚██████╗╚██████╔╝██║ ╚████║'),
-        accent('      ╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═════╝ ╚═╝  ╚═══╝'),
-        '',
-        `      ${theme.bold('浣熊特工队')} ${muted('Pi Coding Agent')} ${dim(`v${VERSION}`)}`,
+    const raccoon = [
+        '    ╭─────────────────────────────────────╮',
+        '    │                                     │',
+        '    │   🦝  ' + theme.bold(accent('浣 熊 特 工 队')) + '            │',
+        '    │       ' + muted('Raccoon Agents') + '  ' + dim(`v${VERSION}`) + '        │',
+        '    │                                     │',
+        '    │   Git 工作流自动化 · 模型档位路由    │',
+        '    │                                     │',
+        '    ╰─────────────────────────────────────╯',
         '',
     ];
+
+    return raccoon.map((line) => truncateToWidth(line, width));
 }
 
 function installHeader(ctx: ExtensionContext) {
     ctx.ui.setTitle('浣熊特工队');
     ctx.ui.setHeader((_tui, theme) => ({
         render(width: number): string[] {
-            return headerLines(theme).map((line) => truncateToWidth(line, width));
+            return headerLines(theme, width);
         },
         invalidate() {},
     }));
@@ -308,6 +311,7 @@ export default function raccoonAgents(pi: ExtensionAPI) {
         }
 
         installHeader(ctx);
+        installWorkflowUI(pi, ctx);
 
         // 注册工具（幂等，多次调用只有第一次生效）
         registerProjectInfoTool(pi);
