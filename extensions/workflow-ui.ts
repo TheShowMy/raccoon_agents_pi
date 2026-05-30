@@ -80,6 +80,10 @@ let workflowState: WorkflowState = {
     parallelTasks: [],
 };
 
+export function getWorkflowState(): Readonly<WorkflowState> {
+    return workflowState;
+}
+
 let progressBarRef: WorkflowProgressBar | undefined;
 let taskPanelRef: ParallelTaskPanel | undefined;
 let tuiRef: TUI | undefined;
