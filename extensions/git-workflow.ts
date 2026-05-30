@@ -1122,11 +1122,11 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 lines.push('### 建议的任务拆分框架');
                 lines.push('根据 Issue 内容，可按以下维度拆分子任务：');
                 lines.push('');
-                lines.push('1. **前端/UI** — 页面组件、交互逻辑、样式调整');
-                lines.push('2. **后端/API** — 接口设计、数据模型、业务逻辑');
-                lines.push('3. **测试** — 单元测试、集成测试、E2E 测试');
-                lines.push('4. **文档** — README、API 文档、CHANGELOG');
-                lines.push('5. **配置/部署** — CI/CD、环境变量、依赖升级');
+                lines.push('1. **前端/UI** — 页面组件、交互逻辑、样式调整（推荐：擅长代码的模型如 GPT-4o / Claude Sonnet）');
+                lines.push('2. **后端/API** — 接口设计、数据模型、业务逻辑（推荐：推理能力强的模型如 Claude Sonnet / GPT-4o）');
+                lines.push('3. **测试** — 单元测试、集成测试、E2E 测试（推荐：快速轻量模型如 GPT-4o-mini）');
+                lines.push('4. **文档** — README、API 文档、CHANGELOG（推荐：擅长长文本的模型如 Gemini / Claude）');
+                lines.push('5. **配置/部署** — CI/CD、环境变量、依赖升级（推荐：通用模型即可）');
                 lines.push('');
                 lines.push('请结合 Issue 描述，判断哪些维度涉及本次需求，逐一实现。');
 
@@ -1216,11 +1216,11 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 lines.push('### 建议的任务拆分框架');
                 lines.push('根据 Issue 内容，可按以下维度拆分子任务：');
                 lines.push('');
-                lines.push('1. **前端/UI** — 页面组件、交互逻辑、样式调整');
-                lines.push('2. **后端/API** — 接口设计、数据模型、业务逻辑');
-                lines.push('3. **测试** — 单元测试、集成测试、E2E 测试');
-                lines.push('4. **文档** — README、API 文档、CHANGELOG');
-                lines.push('5. **配置/部署** — CI/CD、环境变量、依赖升级');
+                lines.push('1. **前端/UI** — 页面组件、交互逻辑、样式调整（推荐：擅长代码的模型如 GPT-4o / Claude Sonnet）');
+                lines.push('2. **后端/API** — 接口设计、数据模型、业务逻辑（推荐：推理能力强的模型如 Claude Sonnet / GPT-4o）');
+                lines.push('3. **测试** — 单元测试、集成测试、E2E 测试（推荐：快速轻量模型如 GPT-4o-mini）');
+                lines.push('4. **文档** — README、API 文档、CHANGELOG（推荐：擅长长文本的模型如 Gemini / Claude）');
+                lines.push('5. **配置/部署** — CI/CD、环境变量、依赖升级（推荐：通用模型即可）');
                 lines.push('');
                 lines.push('请结合 Issue 描述，判断哪些维度涉及本次需求，逐一实现。');
 
