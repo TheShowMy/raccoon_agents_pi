@@ -1,6 +1,6 @@
 /**
- * Git 工作流工具 — 注册 9 个 LLM 可调用工具，
- * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并、测试运行、Issue 管理全流程。
+ * Git 工作流工具 — 注册 10 个 LLM 可调用工具，
+ * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并、测试运行、Issue 管理与拆分全流程。
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -1002,6 +1002,233 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
             if (host === 'gitee') {
                 return fail('暂不支持通过工具查询 Gitee Issue。');
+            }
+
+            return fail(
+                `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
+                    '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
+            );
+        },
+    });
+
+    // ════════════════════════════════════════════════════════
+    // 10. raccoon_issue_breakdown
+    // ════════════════════════════════════════════════════════
+
+    pi.registerTool({
+        name: 'raccoon_issue_breakdown',
+        label: 'Issue Breakdown',
+        description:
+            '读取 Issue 详情并提供任务拆分框架，帮助 Agent 将需求拆分为可执行的子任务。支持 GitHub、GitLab。',
+        parameters: Type.Object({
+            issue: Type.Union(
+                [
+                    Type.Number({ description: 'Issue 编号' }),
+                    Type.String({ description: 'Issue 标题关键词（用于搜索）' }),
+                ],
+                { description: 'Issue 编号或关键词' },
+            ),
+        }),
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            const cwd = ctx.cwd;
+
+            if (!(await isGitWorkTree(pi, cwd))) {
+                return fail('当前目录不是 Git 仓库。');
+            }
+
+            const { host } = await detectGitHost(pi, cwd);
+
+            if (host === 'github') {
+                const ghCheck = await pi.exec('gh', ['--version'], { cwd, timeout: 3_000 });
+                if (ghCheck.code !== 0) {
+                    return fail('未检测到 gh CLI。');
+                }
+
+                let issueNumber: number;
+                if (typeof params.issue === 'number') {
+                    issueNumber = params.issue;
+                } else {
+                    // 搜索 Issue
+                    const searchResult = await pi.exec(
+                        'gh',
+                        ['issue', 'list', '--search', params.issue, '--state', 'open', '--limit', '5', '--json', 'number,title'],
+                        { cwd, timeout: 10_000 },
+                    );
+                    if (searchResult.code !== 0) {
+                        return fail(`搜索 Issue 失败：${searchResult.stderr || searchResult.stdout}`);
+                    }
+
+                    interface SearchIssue {
+                        number: number;
+                        title: string;
+                    }
+
+                    let issues: SearchIssue[];
+                    try {
+                        issues = JSON.parse(searchResult.stdout);
+                    } catch {
+                        return fail('解析搜索结果失败。');
+                    }
+
+                    if (issues.length === 0) {
+                        return fail(`未找到包含 "${params.issue}" 的开放 Issue。`);
+                    }
+                    if (issues.length > 1) {
+                        return fail(
+                            `找到多个匹配 Issue，请使用编号指定：\n` +
+                                issues.map(i => `- #${i.number}: ${i.title}`).join('\n'),
+                        );
+                    }
+                    issueNumber = issues[0].number;
+                }
+
+                const viewResult = await pi.exec(
+                    'gh',
+                    ['issue', 'view', String(issueNumber), '--json', 'number,title,body,labels,state,url'],
+                    { cwd, timeout: 10_000 },
+                );
+
+                if (viewResult.code !== 0) {
+                    return fail(`读取 Issue 失败：${viewResult.stderr || viewResult.stdout}`);
+                }
+
+                interface GhIssueDetail {
+                    number: number;
+                    title: string;
+                    body: string;
+                    labels: Array<{ name: string }>;
+                    state: string;
+                    url: string;
+                }
+
+                let detail: GhIssueDetail;
+                try {
+                    detail = JSON.parse(viewResult.stdout);
+                } catch {
+                    return fail('解析 Issue 详情失败。');
+                }
+
+                const labels = detail.labels.map(l => l.name).join(', ');
+                const lines: string[] = [];
+                lines.push(`## Issue #${detail.number}: ${detail.title}`);
+                lines.push(`- 状态: ${detail.state}`);
+                lines.push(`- 标签: ${labels || '无'}`);
+                lines.push(`- URL: ${detail.url}`);
+                lines.push('');
+                lines.push('### 描述');
+                lines.push(detail.body || '（无描述）');
+                lines.push('');
+                lines.push('---');
+                lines.push('### 建议的任务拆分框架');
+                lines.push('根据 Issue 内容，可按以下维度拆分子任务：');
+                lines.push('');
+                lines.push('1. **前端/UI** — 页面组件、交互逻辑、样式调整');
+                lines.push('2. **后端/API** — 接口设计、数据模型、业务逻辑');
+                lines.push('3. **测试** — 单元测试、集成测试、E2E 测试');
+                lines.push('4. **文档** — README、API 文档、CHANGELOG');
+                lines.push('5. **配置/部署** — CI/CD、环境变量、依赖升级');
+                lines.push('');
+                lines.push('请结合 Issue 描述，判断哪些维度涉及本次需求，逐一实现。');
+
+                return ok(lines.join('\n'));
+            }
+
+            if (host === 'gitlab') {
+                const glabCheck = await pi.exec('glab', ['--version'], { cwd, timeout: 3_000 });
+                if (glabCheck.code !== 0) {
+                    return fail('未检测到 glab CLI。');
+                }
+
+                let issueIid: number;
+                if (typeof params.issue === 'number') {
+                    issueIid = params.issue;
+                } else {
+                    const searchResult = await pi.exec(
+                        'glab',
+                        ['issue', 'list', '--search', params.issue, '--state', 'opened', '--per-page', '5', '--output', 'json'],
+                        { cwd, timeout: 10_000 },
+                    );
+                    if (searchResult.code !== 0) {
+                        return fail(`搜索 Issue 失败：${searchResult.stderr || searchResult.stdout}`);
+                    }
+
+                    interface SearchIssue {
+                        iid: number;
+                        title: string;
+                    }
+
+                    let issues: SearchIssue[];
+                    try {
+                        issues = JSON.parse(searchResult.stdout);
+                    } catch {
+                        return fail('解析搜索结果失败。');
+                    }
+
+                    if (!Array.isArray(issues) || issues.length === 0) {
+                        return fail(`未找到包含 "${params.issue}" 的开放 Issue。`);
+                    }
+                    if (issues.length > 1) {
+                        return fail(
+                            `找到多个匹配 Issue，请使用编号指定：\n` +
+                                issues.map(i => `- #${i.iid}: ${i.title}`).join('\n'),
+                        );
+                    }
+                    issueIid = issues[0].iid;
+                }
+
+                const viewResult = await pi.exec(
+                    'glab',
+                    ['issue', 'view', String(issueIid), '--output', 'json'],
+                    { cwd, timeout: 10_000 },
+                );
+
+                if (viewResult.code !== 0) {
+                    return fail(`读取 Issue 失败：${viewResult.stderr || viewResult.stdout}`);
+                }
+
+                interface GlIssueDetail {
+                    iid: number;
+                    title: string;
+                    description: string;
+                    labels: string[];
+                    state: string;
+                    web_url: string;
+                }
+
+                let detail: GlIssueDetail;
+                try {
+                    detail = JSON.parse(viewResult.stdout);
+                } catch {
+                    return fail('解析 Issue 详情失败。');
+                }
+
+                const labels = detail.labels?.join(', ') || '无';
+                const lines: string[] = [];
+                lines.push(`## Issue #${detail.iid}: ${detail.title}`);
+                lines.push(`- 状态: ${detail.state}`);
+                lines.push(`- 标签: ${labels}`);
+                lines.push(`- URL: ${detail.web_url}`);
+                lines.push('');
+                lines.push('### 描述');
+                lines.push(detail.description || '（无描述）');
+                lines.push('');
+                lines.push('---');
+                lines.push('### 建议的任务拆分框架');
+                lines.push('根据 Issue 内容，可按以下维度拆分子任务：');
+                lines.push('');
+                lines.push('1. **前端/UI** — 页面组件、交互逻辑、样式调整');
+                lines.push('2. **后端/API** — 接口设计、数据模型、业务逻辑');
+                lines.push('3. **测试** — 单元测试、集成测试、E2E 测试');
+                lines.push('4. **文档** — README、API 文档、CHANGELOG');
+                lines.push('5. **配置/部署** — CI/CD、环境变量、依赖升级');
+                lines.push('');
+                lines.push('请结合 Issue 描述，判断哪些维度涉及本次需求，逐一实现。');
+
+                return ok(lines.join('\n'));
+            }
+
+            if (host === 'gitee') {
+                return fail('暂不支持通过工具获取 Gitee Issue 详情。');
             }
 
             return fail(
