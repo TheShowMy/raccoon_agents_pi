@@ -94,16 +94,16 @@ function finalizeFile(
     const isConfig = /\.(json|yaml|yml|toml|config\.|rc\.)|package\.json|tsconfig|eslint|prettier|vite|webpack/i.test(path);
     const isLockfile = /package-lock\.json|yarn\.lock|pnpm-lock\.yaml|bun\.lockb|Gemfile\.lock|Cargo\.lock/i.test(path);
 
-    // 风险评估
+    // 风险评估（优先级：测试文件最低，lockfile/配置中等，业务代码按量分级）
     let riskLevel: 'high' | 'medium' | 'low' = 'low';
-    if (isLockfile) {
-        riskLevel = 'medium'; // lockfile 变更需要检查依赖安全
+    if (isTest) {
+        riskLevel = 'low';
+    } else if (isLockfile) {
+        riskLevel = 'medium';
     } else if (isConfig) {
         riskLevel = 'medium';
     } else if (/\.(ts|js|tsx|jsx|py|go|rs|java|cpp|c)$/i.test(path)) {
         riskLevel = added + removed > 50 ? 'high' : 'medium';
-    } else if (isTest) {
-        riskLevel = 'low';
     }
 
     return {
