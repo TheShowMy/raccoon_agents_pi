@@ -3,7 +3,6 @@ import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-c
 import { VERSION } from '@earendil-works/pi-coding-agent';
 import type { Component, TUI } from '@earendil-works/pi-tui';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
-import { registerNewiss } from './newiss.js';
 
 interface GitStatus {
     kind: 'loading' | 'ready' | 'not-git' | 'error';
@@ -387,8 +386,6 @@ async function ensureGitRepository(pi: ExtensionAPI, ctx: ExtensionContext): Pro
 }
 
 export default function raccoonAgents(pi: ExtensionAPI) {
-    registerNewiss(pi);
-
     pi.on('tool_execution_end', () => {
         gitFooterController?.scheduleRefresh();
     });
