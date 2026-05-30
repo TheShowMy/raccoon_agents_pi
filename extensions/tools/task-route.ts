@@ -10,10 +10,8 @@
 import { Type } from 'typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { runSingleAgent, type AgentConfig } from '../subagent.js';
-import { loadTierConfig, routeModel, type ModelTier, TASK_TIER_MAP } from '../model-tier.js';
+import { loadTierConfig, routeModel, TIER_ORDER, TASK_TIER_MAP } from '../model-tier.js';
 import { ok, fail } from './common.js';
-
-const TIER_ORDER: ModelTier[] = ['low', 'medium', 'high'];
 
 const TASK_PROMPT_MAP: Record<string, string> = {
     test: `你是一位测试工程师。请根据需求编写高质量的单元测试。
@@ -94,8 +92,13 @@ export function registerTaskRouteTool(pi: ExtensionAPI): void {
 
             // 3. 尝试执行，失败自动 fallback
             while (currentTierIdx < TIER_ORDER.length) {
+                // 用户取消时立即中断
+                if (signal?.aborted) {
+                    return fail('用户取消了任务。');
+                }
+
                 const tier = TIER_ORDER[currentTierIdx];
-                const { models, fallback: isFallback } = routeModel(tierConfig, tier);
+                const { models } = routeModel(tierConfig, tier);
 
                 if (models.length === 0) {
                     lines.push(`⚠️ ${tier} 档无可用模型，尝试更高档...`);
@@ -110,7 +113,7 @@ export function registerTaskRouteTool(pi: ExtensionAPI): void {
 
                 if (onUpdate) {
                     onUpdate({
-                        content: [{ type: 'text' as const, text: lines.join('\n') }],
+                        content: [{ type: 'text' as const, text: lines[lines.length - 1] }],
                         details: {},
                     });
                 }
@@ -147,12 +150,15 @@ export function registerTaskRouteTool(pi: ExtensionAPI): void {
                 });
 
                 // 4. 检查结果
-                if (result.exitCode === 0 && !result.timedOut && result.stdout.trim()) {
+                // 注意：不检查 stdout 是否为空，因为子 agent 可能直接修改文件而不输出文本
+                if (result.exitCode === 0 && !result.timedOut) {
                     // 成功
                     lines.push('');
                     lines.push('✅ 任务执行成功');
-                    lines.push('');
-                    lines.push(result.stdout);
+                    if (result.stdout.trim()) {
+                        lines.push('');
+                        lines.push(result.stdout);
+                    }
                     if (result.stderr) {
                         lines.push('');
                         lines.push(`📋 日志：${result.stderr}`);
