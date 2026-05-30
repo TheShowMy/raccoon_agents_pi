@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { gitExec, readGitStatus } from './git-utils.js';
+import { detectGitHost, gitExec, readGitStatus } from './git-utils.js';
 
 /** 无参数的 TypeBox schema */
 const NO_PARAMS = Type.Object({});
@@ -24,8 +24,12 @@ export function registerProjectInfoTool(pi: ExtensionAPI): void {
 
             // 1. Git 状态
             const status = await readGitStatus(pi, cwd);
+            const { host, url } = await detectGitHost(pi, cwd);
             lines.push('## Git 状态');
             lines.push(`- 分支: ${status.branch}`);
+            if (host !== 'unknown') {
+                lines.push(`- 平台: ${host}${url ? ` (${url})` : ''}`);
+            }
             if (status.upstream) {
                 const aheadBehind: string[] = [];
                 if (status.ahead > 0) aheadBehind.push(`领先 ${status.ahead}`);
