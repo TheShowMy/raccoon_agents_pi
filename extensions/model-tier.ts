@@ -12,6 +12,8 @@ import type { ModelRegistry } from '@earendil-works/pi-coding-agent';
 
 export type ModelTier = 'high' | 'medium' | 'low';
 
+export const TIER_ORDER: ModelTier[] = ['low', 'medium', 'high'];
+
 export interface TierConfig {
     models: Record<string, ModelTier>;
 }
@@ -109,11 +111,10 @@ export function routeModel(
     config: TierConfig,
     requiredTier: ModelTier,
 ): { tier: ModelTier; models: string[]; fallback: boolean } {
-    const tierOrder: ModelTier[] = ['low', 'medium', 'high'];
-    const startIndex = tierOrder.indexOf(requiredTier);
+    const startIndex = TIER_ORDER.indexOf(requiredTier);
 
-    for (let i = startIndex; i < tierOrder.length; i++) {
-        const tier = tierOrder[i];
+    for (let i = startIndex; i < TIER_ORDER.length; i++) {
+        const tier = TIER_ORDER[i];
         const models = getModelsByTier(config, tier);
         if (models.length > 0) {
             return { tier, models, fallback: i > startIndex };

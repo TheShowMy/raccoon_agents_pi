@@ -138,7 +138,7 @@ async function mapWithConcurrencyLimit<TIn, TOut>(
 
 // ── 单个 Agent 执行 ──────────────────────────────────────────────
 
-async function runSingleAgent(
+export async function runSingleAgent(
     cwd: string,
     agent: AgentConfig,
     task: string,
@@ -250,6 +250,7 @@ function spawnWithTimeout(
             cwd: options.cwd,
             shell: false,
             stdio: ["ignore", "pipe", "pipe"],
+            env: { ...process.env, PI_SUBAGENT_MODE: "1" },
         });
 
         const killProc = (isTimeout = false) => {
