@@ -1,6 +1,6 @@
 /**
- * Git 工作流工具 — 注册 4 个 LLM 可调用工具，
- * 提供安全的、带校验的分支管理和提交流程。
+ * Git 工作流工具 — 注册 6 个 LLM 可调用工具，
+ * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并全流程。
  */
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -16,12 +16,10 @@ async function currentBranch(pi: ExtensionAPI, cwd: string): Promise<string | nu
     return r.stdout.trim();
 }
 
-/** 格式化成功结果 */
 function ok(text: string) {
     return { content: [{ type: 'text' as const, text }], details: {} };
 }
 
-/** 格式化失败结果 */
 function fail(text: string) {
     return { content: [{ type: 'text' as const, text: `❌ ${text}` }], details: {} };
 }
@@ -29,7 +27,9 @@ function fail(text: string) {
 // ── 注册入口 ──────────────────────────────────────────────
 
 export function registerGitWorkflowTools(pi: ExtensionAPI): void {
-    // ── raccoon_feature_new ───────────────────────────────
+    // ════════════════════════════════════════════════════════
+    // 1. raccoon_feature_new
+    // ════════════════════════════════════════════════════════
 
     pi.registerTool({
         name: 'raccoon_feature_new',
@@ -70,16 +70,18 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
         },
     });
 
-    // ── raccoon_git_commit ────────────────────────────────
+    // ════════════════════════════════════════════════════════
+    // 2. raccoon_git_commit
+    // ════════════════════════════════════════════════════════
 
     pi.registerTool({
         name: 'raccoon_git_commit',
         label: 'Git Commit',
         description: '暂存变更并提交。支持 conventional commits 格式。',
         parameters: Type.Object({
-            message: Type.String({ description: '提交消息，使用 conventional commits 格式（feat:/fix:/refactor:/docs:/chore:）' }),
+            message: Type.String({ description: '提交消息（feat:/fix:/refactor:/docs:/chore:）' }),
             files: Type.Optional(
-                Type.Array(Type.String(), { description: '要暂存的文件列表（可选，不指定则 git add -A）' }),
+                Type.Array(Type.String(), { description: '要暂存的文件（可选，不指定则 git add -A）' }),
             ),
         }),
         async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -113,7 +115,9 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
         },
     });
 
-    // ── raccoon_git_push ──────────────────────────────────
+    // ════════════════════════════════════════════════════════
+    // 3. raccoon_git_push
+    // ════════════════════════════════════════════════════════
 
     pi.registerTool({
         name: 'raccoon_git_push',
@@ -140,8 +144,12 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 return fail('没有配置 remote 仓库。请先执行 git remote add origin <url>。');
             }
 
-            const pushArgs = ['push', '--set-upstream', 'origin', branch];
-            const pushResult = await gitExec(pi, pushArgs, cwd, 30_000);
+            const pushResult = await gitExec(
+                pi,
+                ['push', '--set-upstream', 'origin', branch],
+                cwd,
+                30_000,
+            );
 
             if (pushResult.code !== 0) {
                 return fail(`推送失败：${pushResult.stderr || pushResult.stdout}`);
@@ -151,7 +159,9 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
         },
     });
 
-    // ── raccoon_pr_create ─────────────────────────────────
+    // ════════════════════════════════════════════════════════
+    // 4. raccoon_pr_create
+    // ════════════════════════════════════════════════════════
 
     pi.registerTool({
         name: 'raccoon_pr_create',
@@ -180,7 +190,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
             if (ghCheck.code !== 0) {
                 return fail(
                     '未检测到 gh CLI。\n' +
-                        '安装方法：brew install gh（macOS）或 https://cli.github.com/\n' +
+                        '安装：brew install gh（macOS）或 https://cli.github.com/\n' +
                         '安装后需登录：gh auth login',
                 );
             }
@@ -204,6 +214,258 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
             }
 
             return ok(`✅ PR 创建成功\n${prResult.stdout.trim()}`);
+        },
+    });
+
+    // ════════════════════════════════════════════════════════
+    // 5. raccoon_pr_review
+    // ════════════════════════════════════════════════════════
+
+    pi.registerTool({
+        name: 'raccoon_pr_review',
+        label: 'PR Review',
+        description:
+            '获取当前分支对应 PR 的详情（标题、描述、Diff、CI 状态），供 Agent 审核代码。',
+        parameters: Type.Object({}),
+        async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+            const cwd = ctx.cwd;
+
+            if (!(await isGitWorkTree(pi, cwd))) {
+                return fail('当前目录不是 Git 仓库。');
+            }
+
+            const branch = await currentBranch(pi, cwd);
+            if (!branch) {
+                return fail('无法获取当前分支名。');
+            }
+
+            const prListResult = await pi.exec(
+                'gh',
+                [
+                    'pr', 'list', '--head', branch, '--state', 'open', '--json',
+                    'number,title,body,state,url,headRefName,baseRefName,statusCheckRollup',
+                ],
+                { cwd, timeout: 10_000 },
+            );
+
+            if (prListResult.code !== 0) {
+                return fail(`查询 PR 失败：${prListResult.stderr || prListResult.stdout}`);
+            }
+
+            interface GhPr {
+                number: number;
+                title: string;
+                body: string;
+                state: string;
+                url: string;
+                headRefName: string;
+                baseRefName: string;
+                statusCheckRollup?: Array<{ name: string; status: string; conclusion: string }>;
+            }
+
+            let prs: GhPr[];
+            try {
+                prs = JSON.parse(prListResult.stdout);
+            } catch {
+                return fail('解析 PR 列表失败。');
+            }
+
+            if (prs.length === 0) {
+                return fail(`分支 ${branch} 没有打开的 PR。请先用 raccoon_pr_create 创建 PR。`);
+            }
+
+            const pr = prs[0];
+            const lines: string[] = [];
+            lines.push(`## PR #${pr.number}: ${pr.title}`);
+            lines.push(`- 状态: ${pr.state}`);
+            lines.push(`- 分支: ${pr.headRefName} → ${pr.baseRefName}`);
+            lines.push(`- URL: ${pr.url}`);
+            if (pr.body) {
+                lines.push('');
+                lines.push('### 描述');
+                lines.push(pr.body);
+            }
+
+            if (pr.statusCheckRollup && pr.statusCheckRollup.length > 0) {
+                lines.push('');
+                lines.push('### CI 检查');
+                for (const check of pr.statusCheckRollup) {
+                    const icon =
+                        check.conclusion === 'SUCCESS' ? '✅' :
+                        check.conclusion === 'FAILURE' ? '❌' :
+                        check.conclusion === 'NEUTRAL' ? '⚪' : '⏳';
+                    lines.push(`- ${icon} ${check.name}: ${check.status}${check.conclusion ? ` (${check.conclusion})` : ''}`);
+                }
+            } else {
+                lines.push('');
+                lines.push('### CI 检查');
+                lines.push('- 无 CI 检查数据');
+            }
+
+            const diffResult = await pi.exec(
+                'gh',
+                ['pr', 'diff', String(pr.number)],
+                { cwd, timeout: 15_000 },
+            );
+
+            if (diffResult.code === 0 && diffResult.stdout.trim()) {
+                const diffLines = diffResult.stdout.split('\n');
+                if (diffLines.length > 300) {
+                    lines.push('');
+                    lines.push(`### Diff（前 300 行，共 ${diffLines.length} 行）`);
+                    lines.push('```diff');
+                    lines.push(diffLines.slice(0, 300).join('\n'));
+                    lines.push('```');
+                    lines.push(`（省略 ${diffLines.length - 300} 行）`);
+                } else {
+                    lines.push('');
+                    lines.push(`### Diff（${diffLines.length} 行）`);
+                    lines.push('```diff');
+                    lines.push(diffResult.stdout);
+                    lines.push('```');
+                }
+            }
+
+            return ok(lines.join('\n'));
+        },
+    });
+
+    // ════════════════════════════════════════════════════════
+    // 6. raccoon_pr_merge
+    // ════════════════════════════════════════════════════════
+
+    pi.registerTool({
+        name: 'raccoon_pr_merge',
+        label: 'PR Merge',
+        description:
+            '合并当前分支对应的 PR。要求 CI 全部通过且无冲突，支持 merge/squash/rebase。',
+        parameters: Type.Object({
+            method: Type.Optional(
+                Type.Union(
+                    [Type.Literal('merge'), Type.Literal('squash'), Type.Literal('rebase')],
+                    { description: '合并方式，默认 squash' },
+                ),
+            ),
+        }),
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            const cwd = ctx.cwd;
+            const method = params.method ?? 'squash';
+
+            if (!(await isGitWorkTree(pi, cwd))) {
+                return fail('当前目录不是 Git 仓库。');
+            }
+
+            const branch = await currentBranch(pi, cwd);
+            if (!branch) {
+                return fail('无法获取当前分支名。');
+            }
+
+            const prListResult = await pi.exec(
+                'gh',
+                ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,title,statusCheckRollup'],
+                { cwd, timeout: 10_000 },
+            );
+
+            if (prListResult.code !== 0) {
+                return fail(`查询 PR 失败：${prListResult.stderr || prListResult.stdout}`);
+            }
+
+            interface MergePr {
+                number: number;
+                title: string;
+                statusCheckRollup?: Array<{ name: string; conclusion: string }>;
+            }
+
+            let prs: MergePr[];
+            try {
+                prs = JSON.parse(prListResult.stdout);
+            } catch {
+                return fail('解析 PR 列表失败。');
+            }
+
+            if (prs.length === 0) {
+                return fail(`分支 ${branch} 没有打开的 PR。`);
+            }
+
+            const pr = prs[0];
+
+            // 检查 CI
+            if (pr.statusCheckRollup && pr.statusCheckRollup.length > 0) {
+                const failures = pr.statusCheckRollup.filter(c => c.conclusion === 'FAILURE');
+                const pending = pr.statusCheckRollup.filter(
+                    c => !c.conclusion || c.conclusion === 'PENDING' || c.conclusion === 'IN_PROGRESS',
+                );
+
+                if (failures.length > 0) {
+                    return fail(`CI 未通过：${failures.map(c => c.name).join(', ')}。`);
+                }
+                if (pending.length > 0) {
+                    return fail(`CI 进行中：${pending.map(c => c.name).join(', ')}。等待完成。`);
+                }
+            }
+
+            // 检查合并状态
+            const mergeStatus = await pi.exec(
+                'gh',
+                ['pr', 'view', String(pr.number), '--json', 'mergeable,mergeStateStatus'],
+                { cwd, timeout: 10_000 },
+            );
+
+            if (mergeStatus.code === 0) {
+                try {
+                    const ms = JSON.parse(mergeStatus.stdout);
+                    if (ms.mergeable === 'CONFLICTING') {
+                        return fail('PR 存在合并冲突，请先在本地解决冲突。');
+                    }
+                    if (ms.mergeStateStatus === 'BLOCKED') {
+                        return fail('PR 被阻止合并（可能缺少审核或 CI 未通过）。');
+                    }
+                } catch { /* ignore parse errors */ }
+            }
+
+            const mergeArgs = ['pr', 'merge', String(pr.number), `--${method}`];
+            if (method === 'squash') mergeArgs.push('--subject', pr.title);
+            mergeArgs.push('--delete-branch');
+
+            const mergeResult = await pi.exec('gh', mergeArgs, { cwd, timeout: 15_000 });
+
+            if (mergeResult.code !== 0) {
+                return fail(`合并失败：${mergeResult.stderr || mergeResult.stdout}`);
+            }
+            // 合并后清理本地工作区
+            const checkoutMain = await gitExec(pi, ['checkout', 'main'], cwd);
+            if (checkoutMain.code !== 0) {
+                return ok(
+                    `✅ PR #${pr.number} 已合并（${method}）\n${mergeResult.stdout.trim()}\n\n` +
+                        `⚠️ 本地清理失败：无法切回 main（${checkoutMain.stderr || checkoutMain.stdout}）。请手动执行。`,
+                );
+            }
+
+            const deleteLocal = await gitExec(pi, ['branch', '-d', branch], cwd);
+
+            const pullResult = await gitExec(pi, ['pull'], cwd, 30_000);
+
+            const cleanupLines: string[] = [];
+            cleanupLines.push(`✅ PR #${pr.number} 已合并（${method}）`);
+            cleanupLines.push(mergeResult.stdout.trim());
+            cleanupLines.push('');
+            cleanupLines.push('🏠 已切回 main 分支');
+            if (deleteLocal.code === 0) {
+                cleanupLines.push(`🗑️ 已删除本地分支 ${branch}`);
+            } else {
+                cleanupLines.push(
+                    `⚠️ 本地分支 ${branch} 删除失败：${deleteLocal.stderr || deleteLocal.stdout}`,
+                );
+            }
+            if (pullResult.code === 0) {
+                cleanupLines.push('⬇️ 已拉取最新 main');
+            } else {
+                cleanupLines.push(
+                    `⚠️ git pull 失败：${pullResult.stderr || pullResult.stdout}`,
+                );
+            }
+
+            return ok(cleanupLines.join('\n'));
         },
     });
 }
