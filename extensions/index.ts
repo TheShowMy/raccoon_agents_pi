@@ -12,6 +12,7 @@ import {
 } from './git-utils.js';
 import { registerGitWorkflowTools } from './git-workflow.js';
 import { registerProjectInfoTool } from './project-info.js';
+import { installWorkflowUI } from './workflow-ui.js';
 import { WORKFLOW_SYSTEM_PROMPT } from './workflow-prompt.js';
 
 
@@ -308,6 +309,7 @@ export default function raccoonAgents(pi: ExtensionAPI) {
         }
 
         installHeader(ctx);
+        installWorkflowUI(pi, ctx);
 
         // 注册工具（幂等，多次调用只有第一次生效）
         registerProjectInfoTool(pi);
