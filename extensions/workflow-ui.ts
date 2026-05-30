@@ -142,6 +142,37 @@ export function completeTask(toolName: string, success: boolean): void {
     tuiRef?.requestRender();
 }
 
+/** 手动添加并行任务（用于 subagent 等嵌套任务） */
+export function addParallelTask(name: string, step: WorkflowStep = 'code'): string {
+    const id = `${step}-sub-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    workflowState.parallelTasks.push({
+        id,
+        name,
+        status: 'running',
+        step,
+        startTime: Date.now(),
+    });
+    if (workflowState.parallelTasks.length > 20) {
+        workflowState.parallelTasks = workflowState.parallelTasks.slice(-20);
+    }
+    progressBarRef?.invalidate();
+    taskPanelRef?.invalidate();
+    tuiRef?.requestRender();
+    return id;
+}
+
+/** 手动完成并行任务 */
+export function finishParallelTask(taskId: string, success: boolean): void {
+    const task = workflowState.parallelTasks.find((t) => t.id === taskId);
+    if (task) {
+        task.status = success ? 'done' : 'error';
+        task.endTime = Date.now();
+        progressBarRef?.invalidate();
+        taskPanelRef?.invalidate();
+        tuiRef?.requestRender();
+    }
+}
+
 function getStepLabel(step: WorkflowStep): string {
     const info = WORKFLOW_STEPS.find((s) => s.key === step);
     return info ? `[${info.num}] ${info.label}` : step;
