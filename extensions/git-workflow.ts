@@ -103,13 +103,12 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
             }
 
             const branch = `feat/${params.name}`;
+            const originalBranch = await currentBranch(pi, cwd); // 保存原分支名（必须在 checkout main 之前！）
 
             const checkoutMain = await gitExec(pi, ['checkout', 'main'], cwd);
             if (checkoutMain.code !== 0) {
                 return fail(`无法切换到 main 分支：${checkoutMain.stderr || checkoutMain.stdout}`);
             }
-
-            const originalBranch = await currentBranch(pi, cwd);
 
             const create = await gitExec(pi, ['checkout', '-b', branch], cwd);
             if (create.code !== 0) {
