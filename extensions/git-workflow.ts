@@ -19,6 +19,7 @@ import { registerIssueBreakdownTool } from './tools/issue-breakdown.js';
 import { registerModelScanTool } from './tools/model-scan.js';
 import { registerModelConfigTool } from './tools/model-config.js';
 import { registerModelListTool } from './tools/model-list.js';
+import { registerClarifySelectTool } from './tools/clarify-select.js';
 
 export function registerGitWorkflowTools(pi: ExtensionAPI): void {
     registerFeatureNewTool(pi);
@@ -34,4 +35,5 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
     registerModelScanTool(pi);
     registerModelConfigTool(pi);
     registerModelListTool(pi);
+    registerClarifySelectTool(pi);
 }
