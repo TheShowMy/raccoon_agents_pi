@@ -118,6 +118,31 @@ export async function readGitStatus(pi: ExtensionAPI, cwd: string): Promise<GitS
     };
 }
 
+/** Git 托管平台类型 */
+export type GitHost = 'github' | 'gitlab' | 'gitee' | 'unknown';
+
+/** 通过 remote URL 检测 Git 托管平台 */
+export function detectGitHostFromUrl(url: string): GitHost {
+    const lower = url.toLowerCase();
+    if (lower.includes('github.com')) return 'github';
+    if (lower.includes('gitlab.com') || lower.includes('gitlab')) return 'gitlab';
+    if (lower.includes('gitee.com')) return 'gitee';
+    return 'unknown';
+}
+
+/** 获取当前仓库的 Git 托管平台 */
+export async function detectGitHost(
+    pi: ExtensionAPI,
+    cwd: string,
+): Promise<{ host: GitHost; url: string }> {
+    const result = await pi.exec('git', ['remote', 'get-url', 'origin'], { cwd, timeout: 3_000 });
+    if (result.code !== 0) {
+        return { host: 'unknown', url: '' };
+    }
+    const url = result.stdout.trim();
+    return { host: detectGitHostFromUrl(url), url };
+}
+
 /** 执行 git 命令并返回结果，失败时返回 null + 错误信息 */
 export async function gitExec(
     pi: ExtensionAPI,

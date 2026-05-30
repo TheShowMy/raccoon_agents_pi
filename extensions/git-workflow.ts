@@ -7,7 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
-import { gitExec, isGitWorkTree, readGitStatus } from './git-utils.js';
+import { gitExec, isGitWorkTree, readGitStatus, detectGitHost, type GitHost } from './git-utils.js';
 
 // ── 辅助函数 ──────────────────────────────────────────────
 
@@ -168,10 +168,10 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
     pi.registerTool({
         name: 'raccoon_pr_create',
         label: 'PR Create',
-        description: '创建 Pull Request。需要安装 gh CLI。',
+        description: '创建 Pull Request / Merge Request。支持 GitHub (gh)、GitLab (glab)。',
         parameters: Type.Object({
-            title: Type.String({ description: 'PR 标题' }),
-            body: Type.Optional(Type.String({ description: 'PR 描述（可选）' })),
+            title: Type.String({ description: 'PR/MR 标题' }),
+            body: Type.Optional(Type.String({ description: 'PR/MR 描述（可选）' })),
             base: Type.Optional(Type.String({ description: '目标分支，默认 main' })),
         }),
         async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -187,35 +187,75 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
             }
 
             const base = params.base ?? 'main';
-
-            const ghCheck = await pi.exec('gh', ['--version'], { cwd, timeout: 3_000 });
-            if (ghCheck.code !== 0) {
-                return fail(
-                    '未检测到 gh CLI。\n' +
-                        '安装：brew install gh（macOS）或 https://cli.github.com/\n' +
-                        '安装后需登录：gh auth login',
-                );
-            }
+            const { host } = await detectGitHost(pi, cwd);
 
             const remoteCheck = await gitExec(pi, ['rev-parse', '--verify', `origin/${branch}`], cwd);
             if (remoteCheck.code !== 0) {
                 return fail(
-                    `远程分支 origin/${branch} 不存在。\n请先用 raccoon_git_push 推送分支后再创建 PR。`,
+                    `远程分支 origin/${branch} 不存在。\n请先用 raccoon_git_push 推送分支后再创建 PR/MR。`,
                 );
             }
 
-            const prArgs = ['pr', 'create', '--head', branch, '--base', base, '--title', params.title];
-            if (params.body) {
-                prArgs.push('--body', params.body);
+            if (host === 'github') {
+                const ghCheck = await pi.exec('gh', ['--version'], { cwd, timeout: 3_000 });
+                if (ghCheck.code !== 0) {
+                    return fail(
+                        '未检测到 gh CLI。\n' +
+                            '安装：brew install gh（macOS）或 https://cli.github.com/\n' +
+                            '安装后需登录：gh auth login',
+                    );
+                }
+
+                const prArgs = ['pr', 'create', '--head', branch, '--base', base, '--title', params.title];
+                if (params.body) {
+                    prArgs.push('--body', params.body);
+                }
+
+                const prResult = await pi.exec('gh', prArgs, { cwd, timeout: 15_000 });
+                if (prResult.code !== 0) {
+                    return fail(`创建 PR 失败：${prResult.stderr || prResult.stdout}`);
+                }
+                return ok(`✅ PR 创建成功\n${prResult.stdout.trim()}`);
             }
 
-            const prResult = await pi.exec('gh', prArgs, { cwd, timeout: 15_000 });
+            if (host === 'gitlab') {
+                const glabCheck = await pi.exec('glab', ['--version'], { cwd, timeout: 3_000 });
+                if (glabCheck.code !== 0) {
+                    return fail(
+                        '未检测到 glab CLI。\n' +
+                            '安装：brew install glab（macOS）或 https://glab.readthedocs.io/\n' +
+                            '安装后需登录：glab auth login',
+                    );
+                }
 
-            if (prResult.code !== 0) {
-                return fail(`创建 PR 失败：${prResult.stderr || prResult.stdout}`);
+                const mrArgs = [
+                    'mr', 'create',
+                    '--source-branch', branch,
+                    '--target-branch', base,
+                    '--title', params.title,
+                ];
+                if (params.body) {
+                    mrArgs.push('--description', params.body);
+                }
+
+                const mrResult = await pi.exec('glab', mrArgs, { cwd, timeout: 15_000 });
+                if (mrResult.code !== 0) {
+                    return fail(`创建 MR 失败：${mrResult.stderr || mrResult.stdout}`);
+                }
+                return ok(`✅ MR 创建成功\n${mrResult.stdout.trim()}`);
             }
 
-            return ok(`✅ PR 创建成功\n${prResult.stdout.trim()}`);
+            if (host === 'gitee') {
+                return fail(
+                    '暂不支持通过工具自动创建 Gitee PR。\n' +
+                        '请前往 Gitee 网站手动创建 Pull Request。',
+                );
+            }
+
+            return fail(
+                `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
+                    '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
+            );
         },
     });
 
@@ -227,7 +267,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
         name: 'raccoon_pr_review',
         label: 'PR Review',
         description:
-            '获取当前分支对应 PR 的详情（标题、描述、Diff、CI 状态），供 Agent 审核代码。',
+            '获取当前分支对应 PR/MR 的详情（标题、描述、Diff、CI 状态），供 Agent 审核代码。支持 GitHub、GitLab。',
         parameters: Type.Object({}),
         async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
             const cwd = ctx.cwd;
@@ -241,94 +281,185 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 return fail('无法获取当前分支名。');
             }
 
-            const prListResult = await pi.exec(
-                'gh',
-                [
-                    'pr', 'list', '--head', branch, '--state', 'open', '--json',
-                    'number,title,body,state,url,headRefName,baseRefName,statusCheckRollup',
-                ],
-                { cwd, timeout: 10_000 },
-            );
+            const { host } = await detectGitHost(pi, cwd);
 
-            if (prListResult.code !== 0) {
-                return fail(`查询 PR 失败：${prListResult.stderr || prListResult.stdout}`);
-            }
+            if (host === 'github') {
+                const prListResult = await pi.exec(
+                    'gh',
+                    [
+                        'pr', 'list', '--head', branch, '--state', 'open', '--json',
+                        'number,title,body,state,url,headRefName,baseRefName,statusCheckRollup',
+                    ],
+                    { cwd, timeout: 10_000 },
+                );
 
-            interface GhPr {
-                number: number;
-                title: string;
-                body: string;
-                state: string;
-                url: string;
-                headRefName: string;
-                baseRefName: string;
-                statusCheckRollup?: Array<{ name: string; status: string; conclusion: string }>;
-            }
-
-            let prs: GhPr[];
-            try {
-                prs = JSON.parse(prListResult.stdout);
-            } catch {
-                return fail('解析 PR 列表失败。');
-            }
-
-            if (prs.length === 0) {
-                return fail(`分支 ${branch} 没有打开的 PR。请先用 raccoon_pr_create 创建 PR。`);
-            }
-
-            const pr = prs[0];
-            const lines: string[] = [];
-            lines.push(`## PR #${pr.number}: ${pr.title}`);
-            lines.push(`- 状态: ${pr.state}`);
-            lines.push(`- 分支: ${pr.headRefName} → ${pr.baseRefName}`);
-            lines.push(`- URL: ${pr.url}`);
-            if (pr.body) {
-                lines.push('');
-                lines.push('### 描述');
-                lines.push(pr.body);
-            }
-
-            if (pr.statusCheckRollup && pr.statusCheckRollup.length > 0) {
-                lines.push('');
-                lines.push('### CI 检查');
-                for (const check of pr.statusCheckRollup) {
-                    const icon =
-                        check.conclusion === 'SUCCESS' ? '✅' :
-                        check.conclusion === 'FAILURE' ? '❌' :
-                        check.conclusion === 'NEUTRAL' ? '⚪' : '⏳';
-                    lines.push(`- ${icon} ${check.name}: ${check.status}${check.conclusion ? ` (${check.conclusion})` : ''}`);
+                if (prListResult.code !== 0) {
+                    return fail(`查询 PR 失败：${prListResult.stderr || prListResult.stdout}`);
                 }
-            } else {
-                lines.push('');
-                lines.push('### CI 检查');
-                lines.push('- 无 CI 检查数据');
-            }
 
-            const diffResult = await pi.exec(
-                'gh',
-                ['pr', 'diff', String(pr.number)],
-                { cwd, timeout: 15_000 },
-            );
+                interface GhPr {
+                    number: number;
+                    title: string;
+                    body: string;
+                    state: string;
+                    url: string;
+                    headRefName: string;
+                    baseRefName: string;
+                    statusCheckRollup?: Array<{ name: string; status: string; conclusion: string }>;
+                }
 
-            if (diffResult.code === 0 && diffResult.stdout.trim()) {
-                const diffLines = diffResult.stdout.split('\n');
-                if (diffLines.length > 300) {
+                let prs: GhPr[];
+                try {
+                    prs = JSON.parse(prListResult.stdout);
+                } catch {
+                    return fail('解析 PR 列表失败。');
+                }
+
+                if (prs.length === 0) {
+                    return fail(`分支 ${branch} 没有打开的 PR。请先用 raccoon_pr_create 创建 PR。`);
+                }
+
+                const pr = prs[0];
+                const lines: string[] = [];
+                lines.push(`## PR #${pr.number}: ${pr.title}`);
+                lines.push(`- 状态: ${pr.state}`);
+                lines.push(`- 分支: ${pr.headRefName} → ${pr.baseRefName}`);
+                lines.push(`- URL: ${pr.url}`);
+                if (pr.body) {
                     lines.push('');
-                    lines.push(`### Diff（前 300 行，共 ${diffLines.length} 行）`);
-                    lines.push('```diff');
-                    lines.push(diffLines.slice(0, 300).join('\n'));
-                    lines.push('```');
-                    lines.push(`（省略 ${diffLines.length - 300} 行）`);
+                    lines.push('### 描述');
+                    lines.push(pr.body);
+                }
+
+                if (pr.statusCheckRollup && pr.statusCheckRollup.length > 0) {
+                    lines.push('');
+                    lines.push('### CI 检查');
+                    for (const check of pr.statusCheckRollup) {
+                        const icon =
+                            check.conclusion === 'SUCCESS' ? '✅' :
+                            check.conclusion === 'FAILURE' ? '❌' :
+                            check.conclusion === 'NEUTRAL' ? '⚪' : '⏳';
+                        lines.push(`- ${icon} ${check.name}: ${check.status}${check.conclusion ? ` (${check.conclusion})` : ''}`);
+                    }
                 } else {
                     lines.push('');
-                    lines.push(`### Diff（${diffLines.length} 行）`);
-                    lines.push('```diff');
-                    lines.push(diffResult.stdout);
-                    lines.push('```');
+                    lines.push('### CI 检查');
+                    lines.push('- 无 CI 检查数据');
                 }
+
+                const diffResult = await pi.exec(
+                    'gh',
+                    ['pr', 'diff', String(pr.number)],
+                    { cwd, timeout: 15_000 },
+                );
+
+                if (diffResult.code === 0 && diffResult.stdout.trim()) {
+                    const diffLines = diffResult.stdout.split('\n');
+                    if (diffLines.length > 300) {
+                        lines.push('');
+                        lines.push(`### Diff（前 300 行，共 ${diffLines.length} 行）`);
+                        lines.push('```diff');
+                        lines.push(diffLines.slice(0, 300).join('\n'));
+                        lines.push('```');
+                        lines.push(`（省略 ${diffLines.length - 300} 行）`);
+                    } else {
+                        lines.push('');
+                        lines.push(`### Diff（${diffLines.length} 行）`);
+                        lines.push('```diff');
+                        lines.push(diffResult.stdout);
+                        lines.push('```');
+                    }
+                }
+
+                return ok(lines.join('\n'));
             }
 
-            return ok(lines.join('\n'));
+            if (host === 'gitlab') {
+                const mrListResult = await pi.exec(
+                    'glab',
+                    ['mr', 'list', '--source-branch', branch, '--state', 'opened', '--output', 'json'],
+                    { cwd, timeout: 10_000 },
+                );
+
+                if (mrListResult.code !== 0) {
+                    return fail(`查询 MR 失败：${mrListResult.stderr || mrListResult.stdout}`);
+                }
+
+                interface GlMr {
+                    iid: number;
+                    title: string;
+                    description: string;
+                    state: string;
+                    web_url: string;
+                    source_branch: string;
+                    target_branch: string;
+                    detailed_merge_status?: string;
+                }
+
+                let mrs: GlMr[];
+                try {
+                    mrs = JSON.parse(mrListResult.stdout);
+                } catch {
+                    return fail('解析 MR 列表失败。');
+                }
+
+                if (!Array.isArray(mrs) || mrs.length === 0) {
+                    return fail(`分支 ${branch} 没有打开的 MR。请先用 raccoon_pr_create 创建 MR。`);
+                }
+
+                const mr = mrs[0];
+                const lines: string[] = [];
+                lines.push(`## MR !${mr.iid}: ${mr.title}`);
+                lines.push(`- 状态: ${mr.state}`);
+                lines.push(`- 分支: ${mr.source_branch} → ${mr.target_branch}`);
+                lines.push(`- URL: ${mr.web_url}`);
+                if (mr.detailed_merge_status) {
+                    lines.push(`- 合并状态: ${mr.detailed_merge_status}`);
+                }
+                if (mr.description) {
+                    lines.push('');
+                    lines.push('### 描述');
+                    lines.push(mr.description);
+                }
+
+                const diffResult = await pi.exec(
+                    'glab',
+                    ['mr', 'diff', String(mr.iid)],
+                    { cwd, timeout: 15_000 },
+                );
+
+                if (diffResult.code === 0 && diffResult.stdout.trim()) {
+                    const diffLines = diffResult.stdout.split('\n');
+                    if (diffLines.length > 300) {
+                        lines.push('');
+                        lines.push(`### Diff（前 300 行，共 ${diffLines.length} 行）`);
+                        lines.push('```diff');
+                        lines.push(diffLines.slice(0, 300).join('\n'));
+                        lines.push('```');
+                        lines.push(`（省略 ${diffLines.length - 300} 行）`);
+                    } else {
+                        lines.push('');
+                        lines.push(`### Diff（${diffLines.length} 行）`);
+                        lines.push('```diff');
+                        lines.push(diffResult.stdout);
+                        lines.push('```');
+                    }
+                }
+
+                return ok(lines.join('\n'));
+            }
+
+            if (host === 'gitee') {
+                return fail(
+                    '暂不支持通过工具自动获取 Gitee PR 详情。\n' +
+                        '请前往 Gitee 网站手动查看 Pull Request。',
+                );
+            }
+
+            return fail(
+                `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
+                    '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
+            );
         },
     });
 
@@ -421,7 +552,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
         name: 'raccoon_pr_merge',
         label: 'PR Merge',
         description:
-            '合并当前分支对应的 PR。要求 CI 全部通过且无冲突，支持 merge/squash/rebase。',
+            '合并当前分支对应的 PR/MR。要求 CI 全部通过且无冲突，支持 merge/squash/rebase。支持 GitHub、GitLab。',
         parameters: Type.Object({
             method: Type.Optional(
                 Type.Union(
@@ -443,112 +574,229 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 return fail('无法获取当前分支名。');
             }
 
-            const prListResult = await pi.exec(
-                'gh',
-                ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,title,statusCheckRollup'],
-                { cwd, timeout: 10_000 },
-            );
+            const { host } = await detectGitHost(pi, cwd);
 
-            if (prListResult.code !== 0) {
-                return fail(`查询 PR 失败：${prListResult.stderr || prListResult.stdout}`);
-            }
-
-            interface MergePr {
-                number: number;
-                title: string;
-                statusCheckRollup?: Array<{ name: string; conclusion: string }>;
-            }
-
-            let prs: MergePr[];
-            try {
-                prs = JSON.parse(prListResult.stdout);
-            } catch {
-                return fail('解析 PR 列表失败。');
-            }
-
-            if (prs.length === 0) {
-                return fail(`分支 ${branch} 没有打开的 PR。`);
-            }
-
-            const pr = prs[0];
-
-            // 检查 CI
-            if (pr.statusCheckRollup && pr.statusCheckRollup.length > 0) {
-                const failures = pr.statusCheckRollup.filter(c => c.conclusion === 'FAILURE');
-                const pending = pr.statusCheckRollup.filter(
-                    c => !c.conclusion || c.conclusion === 'PENDING' || c.conclusion === 'IN_PROGRESS',
+            if (host === 'github') {
+                const prListResult = await pi.exec(
+                    'gh',
+                    ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'number,title,statusCheckRollup'],
+                    { cwd, timeout: 10_000 },
                 );
 
-                if (failures.length > 0) {
-                    return fail(`CI 未通过：${failures.map(c => c.name).join(', ')}。`);
+                if (prListResult.code !== 0) {
+                    return fail(`查询 PR 失败：${prListResult.stderr || prListResult.stdout}`);
                 }
-                if (pending.length > 0) {
-                    return fail(`CI 进行中：${pending.map(c => c.name).join(', ')}。等待完成。`);
+
+                interface MergePr {
+                    number: number;
+                    title: string;
+                    statusCheckRollup?: Array<{ name: string; conclusion: string }>;
                 }
-            }
 
-            // 检查合并状态
-            const mergeStatus = await pi.exec(
-                'gh',
-                ['pr', 'view', String(pr.number), '--json', 'mergeable,mergeStateStatus'],
-                { cwd, timeout: 10_000 },
-            );
-
-            if (mergeStatus.code === 0) {
+                let prs: MergePr[];
                 try {
-                    const ms = JSON.parse(mergeStatus.stdout);
-                    if (ms.mergeable === 'CONFLICTING') {
-                        return fail('PR 存在合并冲突，请先在本地解决冲突。');
+                    prs = JSON.parse(prListResult.stdout);
+                } catch {
+                    return fail('解析 PR 列表失败。');
+                }
+
+                if (prs.length === 0) {
+                    return fail(`分支 ${branch} 没有打开的 PR。`);
+                }
+
+                const pr = prs[0];
+
+                // 检查 CI
+                if (pr.statusCheckRollup && pr.statusCheckRollup.length > 0) {
+                    const failures = pr.statusCheckRollup.filter(c => c.conclusion === 'FAILURE');
+                    const pending = pr.statusCheckRollup.filter(
+                        c => !c.conclusion || c.conclusion === 'PENDING' || c.conclusion === 'IN_PROGRESS',
+                    );
+
+                    if (failures.length > 0) {
+                        return fail(`CI 未通过：${failures.map(c => c.name).join(', ')}。`);
                     }
-                    if (ms.mergeStateStatus === 'BLOCKED') {
-                        return fail('PR 被阻止合并（可能缺少审核或 CI 未通过）。');
+                    if (pending.length > 0) {
+                        return fail(`CI 进行中：${pending.map(c => c.name).join(', ')}。等待完成。`);
                     }
-                } catch { /* ignore parse errors */ }
+                }
+
+                // 检查合并状态
+                const mergeStatus = await pi.exec(
+                    'gh',
+                    ['pr', 'view', String(pr.number), '--json', 'mergeable,mergeStateStatus'],
+                    { cwd, timeout: 10_000 },
+                );
+
+                if (mergeStatus.code === 0) {
+                    try {
+                        const ms = JSON.parse(mergeStatus.stdout);
+                        if (ms.mergeable === 'CONFLICTING') {
+                            return fail('PR 存在合并冲突，请先在本地解决冲突。');
+                        }
+                        if (ms.mergeStateStatus === 'BLOCKED') {
+                            return fail('PR 被阻止合并（可能缺少审核或 CI 未通过）。');
+                        }
+                    } catch { /* ignore parse errors */ }
+                }
+
+                const mergeArgs = ['pr', 'merge', String(pr.number), `--${method}`];
+                if (method === 'squash') mergeArgs.push('--subject', pr.title);
+                mergeArgs.push('--delete-branch');
+
+                const mergeResult = await pi.exec('gh', mergeArgs, { cwd, timeout: 15_000 });
+
+                if (mergeResult.code !== 0) {
+                    return fail(`合并失败：${mergeResult.stderr || mergeResult.stdout}`);
+                }
+
+                // 合并后清理本地工作区
+                const checkoutMain = await gitExec(pi, ['checkout', 'main'], cwd);
+                if (checkoutMain.code !== 0) {
+                    return ok(
+                        `✅ PR #${pr.number} 已合并（${method}）\n${mergeResult.stdout.trim()}\n\n` +
+                            `⚠️ 本地清理失败：无法切回 main（${checkoutMain.stderr || checkoutMain.stdout}）。请手动执行。`,
+                    );
+                }
+
+                const deleteLocal = await gitExec(pi, ['branch', '-d', branch], cwd);
+                const pullResult = await gitExec(pi, ['pull'], cwd, 30_000);
+
+                const cleanupLines: string[] = [];
+                cleanupLines.push(`✅ PR #${pr.number} 已合并（${method}）`);
+                cleanupLines.push(mergeResult.stdout.trim());
+                cleanupLines.push('');
+                cleanupLines.push('🏠 已切回 main 分支');
+                if (deleteLocal.code === 0) {
+                    cleanupLines.push(`🗑️ 已删除本地分支 ${branch}`);
+                } else {
+                    cleanupLines.push(
+                        `⚠️ 本地分支 ${branch} 删除失败：${deleteLocal.stderr || deleteLocal.stdout}`,
+                    );
+                }
+                if (pullResult.code === 0) {
+                    cleanupLines.push('⬇️ 已拉取最新 main');
+                } else {
+                    cleanupLines.push(
+                        `⚠️ git pull 失败：${pullResult.stderr || pullResult.stdout}`,
+                    );
+                }
+
+                return ok(cleanupLines.join('\n'));
             }
 
-            const mergeArgs = ['pr', 'merge', String(pr.number), `--${method}`];
-            if (method === 'squash') mergeArgs.push('--subject', pr.title);
-            mergeArgs.push('--delete-branch');
+            if (host === 'gitlab') {
+                const mrListResult = await pi.exec(
+                    'glab',
+                    ['mr', 'list', '--source-branch', branch, '--state', 'opened', '--output', 'json'],
+                    { cwd, timeout: 10_000 },
+                );
 
-            const mergeResult = await pi.exec('gh', mergeArgs, { cwd, timeout: 15_000 });
+                if (mrListResult.code !== 0) {
+                    return fail(`查询 MR 失败：${mrListResult.stderr || mrListResult.stdout}`);
+                }
 
-            if (mergeResult.code !== 0) {
-                return fail(`合并失败：${mergeResult.stderr || mergeResult.stdout}`);
+                interface GlMergeMr {
+                    iid: number;
+                    title: string;
+                    detailed_merge_status?: string;
+                    head_pipeline?: { status: string };
+                }
+
+                let mrs: GlMergeMr[];
+                try {
+                    mrs = JSON.parse(mrListResult.stdout);
+                } catch {
+                    return fail('解析 MR 列表失败。');
+                }
+
+                if (!Array.isArray(mrs) || mrs.length === 0) {
+                    return fail(`分支 ${branch} 没有打开的 MR。`);
+                }
+
+                const mr = mrs[0];
+
+                // 检查合并状态
+                if (mr.detailed_merge_status) {
+                    const blocking = ['checking', 'unchecked'];
+                    if (!blocking.includes(mr.detailed_merge_status)) {
+                        if (mr.detailed_merge_status.includes('conflict')) {
+                            return fail('MR 存在合并冲突，请先在本地解决冲突。');
+                        }
+                        if (mr.detailed_merge_status !== 'mergeable') {
+                            return fail(`MR 当前不可合并：${mr.detailed_merge_status}。`);
+                        }
+                    }
+                }
+
+                // 检查 CI
+                if (mr.head_pipeline && mr.head_pipeline.status) {
+                    const status = mr.head_pipeline.status.toLowerCase();
+                    if (status === 'failed' || status === 'canceled') {
+                        return fail(`CI 未通过（pipeline ${mr.head_pipeline.status}）。`);
+                    }
+                    if (status !== 'success' && status !== 'skipped') {
+                        return fail(`CI 进行中（pipeline ${mr.head_pipeline.status}）。请等待完成。`);
+                    }
+                }
+
+                const squashFlag = method === 'squash' ? '--squash' : '';
+                const mergeCmd = squashFlag
+                    ? ['mr', 'merge', String(mr.iid), '--squash', '--yes']
+                    : ['mr', 'merge', String(mr.iid), `--${method}`, '--yes'];
+
+                const mergeResult = await pi.exec('glab', mergeCmd, { cwd, timeout: 15_000 });
+
+                if (mergeResult.code !== 0) {
+                    return fail(`合并失败：${mergeResult.stderr || mergeResult.stdout}`);
+                }
+
+                // 合并后清理本地工作区
+                const checkoutMain = await gitExec(pi, ['checkout', 'main'], cwd);
+                if (checkoutMain.code !== 0) {
+                    return ok(
+                        `✅ MR !${mr.iid} 已合并（${method}）\n${mergeResult.stdout.trim()}\n\n` +
+                            `⚠️ 本地清理失败：无法切回 main（${checkoutMain.stderr || checkoutMain.stdout}）。请手动执行。`,
+                    );
+                }
+
+                const deleteLocal = await gitExec(pi, ['branch', '-d', branch], cwd);
+                const pullResult = await gitExec(pi, ['pull'], cwd, 30_000);
+
+                const cleanupLines: string[] = [];
+                cleanupLines.push(`✅ MR !${mr.iid} 已合并（${method}）`);
+                cleanupLines.push(mergeResult.stdout.trim());
+                cleanupLines.push('');
+                cleanupLines.push('🏠 已切回 main 分支');
+                if (deleteLocal.code === 0) {
+                    cleanupLines.push(`🗑️ 已删除本地分支 ${branch}`);
+                } else {
+                    cleanupLines.push(
+                        `⚠️ 本地分支 ${branch} 删除失败：${deleteLocal.stderr || deleteLocal.stdout}`,
+                    );
+                }
+                if (pullResult.code === 0) {
+                    cleanupLines.push('⬇️ 已拉取最新 main');
+                } else {
+                    cleanupLines.push(
+                        `⚠️ git pull 失败：${pullResult.stderr || pullResult.stdout}`,
+                    );
+                }
+
+                return ok(cleanupLines.join('\n'));
             }
-            // 合并后清理本地工作区
-            const checkoutMain = await gitExec(pi, ['checkout', 'main'], cwd);
-            if (checkoutMain.code !== 0) {
-                return ok(
-                    `✅ PR #${pr.number} 已合并（${method}）\n${mergeResult.stdout.trim()}\n\n` +
-                        `⚠️ 本地清理失败：无法切回 main（${checkoutMain.stderr || checkoutMain.stdout}）。请手动执行。`,
+
+            if (host === 'gitee') {
+                return fail(
+                    '暂不支持通过工具自动合并 Gitee PR。\n' +
+                        '请前往 Gitee 网站手动合并 Pull Request。',
                 );
             }
 
-            const deleteLocal = await gitExec(pi, ['branch', '-d', branch], cwd);
-
-            const pullResult = await gitExec(pi, ['pull'], cwd, 30_000);
-
-            const cleanupLines: string[] = [];
-            cleanupLines.push(`✅ PR #${pr.number} 已合并（${method}）`);
-            cleanupLines.push(mergeResult.stdout.trim());
-            cleanupLines.push('');
-            cleanupLines.push('🏠 已切回 main 分支');
-            if (deleteLocal.code === 0) {
-                cleanupLines.push(`🗑️ 已删除本地分支 ${branch}`);
-            } else {
-                cleanupLines.push(
-                    `⚠️ 本地分支 ${branch} 删除失败：${deleteLocal.stderr || deleteLocal.stdout}`,
-                );
-            }
-            if (pullResult.code === 0) {
-                cleanupLines.push('⬇️ 已拉取最新 main');
-            } else {
-                cleanupLines.push(
-                    `⚠️ git pull 失败：${pullResult.stderr || pullResult.stdout}`,
-                );
-            }
-
-            return ok(cleanupLines.join('\n'));
+            return fail(
+                `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
+                    '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
+            );
         },
     });
 }
