@@ -2,13 +2,12 @@
  * 现代化工作流可视化 UI
  *
  * 提供：
- * 1. 工作流阶段进度条（编辑器上方 widget）
+ * 1. 工作流阶段进度条（编辑器上方 widget）—— 当前阶段 + 简洁进度条
  * 2. 并行任务面板（编辑器下方 widget）
- * 3. 现代化 Header 风格
  */
 
 import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-coding-agent';
-import type { Component } from '@earendil-works/pi-tui';
+import type { Component, TUI } from '@earendil-works/pi-tui';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 
 // ── 工作流阶段定义 ──────────────────────────────────────────────
@@ -29,20 +28,20 @@ export type WorkflowStep =
 interface StepInfo {
     key: WorkflowStep;
     label: string;
-    icon: string;
+    num: string;
 }
 
 const WORKFLOW_STEPS: StepInfo[] = [
-    { key: 'clarify', label: '需求澄清', icon: '1' },
-    { key: 'issue', label: '创建 Issue', icon: '2' },
-    { key: 'branch', label: '创建分支', icon: '3' },
-    { key: 'code', label: '编码实现', icon: '4' },
-    { key: 'verify', label: '验证测试', icon: '5' },
-    { key: 'commit', label: '提交代码', icon: '6' },
-    { key: 'push', label: '推送分支', icon: '7' },
-    { key: 'pr-create', label: '创建 PR', icon: '8' },
-    { key: 'review', label: '代码审核', icon: '9' },
-    { key: 'merge', label: '合并代码', icon: '10' },
+    { key: 'clarify', label: '需求澄清', num: '1' },
+    { key: 'issue', label: '创建 Issue', num: '2' },
+    { key: 'branch', label: '创建分支', num: '3' },
+    { key: 'code', label: '编码实现', num: '4' },
+    { key: 'verify', label: '验证测试', num: '5' },
+    { key: 'commit', label: '提交代码', num: '6' },
+    { key: 'push', label: '推送分支', num: '7' },
+    { key: 'pr-create', label: '创建 PR', num: '8' },
+    { key: 'review', label: '代码审核', num: '9' },
+    { key: 'merge', label: '合并代码', num: '10' },
 ];
 
 // 工具名到阶段的映射
@@ -60,13 +59,6 @@ const TOOL_STEP_MAP: Record<string, WorkflowStep> = {
 
 // ── 工作流状态管理 ──────────────────────────────────────────────
 
-export interface WorkflowState {
-    currentStep: WorkflowStep;
-    completedSteps: Set<WorkflowStep>;
-    parallelTasks: ParallelTask[];
-    startTime: number;
-}
-
 export interface ParallelTask {
     id: string;
     name: string;
@@ -76,27 +68,31 @@ export interface ParallelTask {
     endTime?: number;
 }
 
+interface WorkflowState {
+    currentStep: WorkflowStep;
+    completedSteps: Set<WorkflowStep>;
+    parallelTasks: ParallelTask[];
+}
+
 let workflowState: WorkflowState = {
     currentStep: 'idle',
     completedSteps: new Set(),
     parallelTasks: [],
-    startTime: Date.now(),
 };
 
-let workflowWidgetHandle: { requestRender: () => void } | undefined;
-let taskWidgetHandle: { requestRender: () => void } | undefined;
+let progressBarRef: WorkflowProgressBar | undefined;
+let taskPanelRef: ParallelTaskPanel | undefined;
+let tuiRef: TUI | undefined;
 
 export function resetWorkflowState(): void {
     workflowState = {
         currentStep: 'idle',
         completedSteps: new Set(),
         parallelTasks: [],
-        startTime: Date.now(),
     };
-}
-
-export function getWorkflowState(): WorkflowState {
-    return workflowState;
+    progressBarRef?.invalidate();
+    taskPanelRef?.invalidate();
+    tuiRef?.requestRender();
 }
 
 export function advanceWorkflowStep(toolName: string): void {
@@ -106,24 +102,22 @@ export function advanceWorkflowStep(toolName: string): void {
     if (workflowState.currentStep !== 'idle' && workflowState.currentStep !== step) {
         workflowState.completedSteps.add(workflowState.currentStep);
     }
-
     workflowState.currentStep = step;
 
-    const taskId = `${step}-${Date.now()}`;
     workflowState.parallelTasks.push({
-        id: taskId,
+        id: `${step}-${Date.now()}`,
         name: getStepLabel(step),
         status: 'running',
         step,
         startTime: Date.now(),
     });
-
     if (workflowState.parallelTasks.length > 20) {
         workflowState.parallelTasks = workflowState.parallelTasks.slice(-20);
     }
 
-    workflowWidgetHandle?.requestRender();
-    taskWidgetHandle?.requestRender();
+    progressBarRef?.invalidate();
+    taskPanelRef?.invalidate();
+    tuiRef?.requestRender();
 }
 
 export function completeTask(toolName: string, success: boolean): void {
@@ -143,13 +137,14 @@ export function completeTask(toolName: string, success: boolean): void {
         workflowState.completedSteps.add(step);
     }
 
-    taskWidgetHandle?.requestRender();
-    workflowWidgetHandle?.requestRender();
+    progressBarRef?.invalidate();
+    taskPanelRef?.invalidate();
+    tuiRef?.requestRender();
 }
 
 function getStepLabel(step: WorkflowStep): string {
     const info = WORKFLOW_STEPS.find((s) => s.key === step);
-    return info ? `${info.icon} ${info.label}` : step;
+    return info ? `[${info.num}] ${info.label}` : step;
 }
 
 // ── 进度条组件 ──────────────────────────────────────────────
@@ -162,99 +157,53 @@ class WorkflowProgressBar implements Component {
         if (this.cachedLines && this.cachedWidth === width) {
             return this.cachedLines;
         }
-
-        const lines = this.buildProgressBar(width);
+        const lines = this.build(width);
         this.cachedLines = lines;
         this.cachedWidth = width;
         return lines;
     }
 
-    private buildProgressBar(width: number): string[] {
+    private build(width: number): string[] {
         const theme = globalTheme;
         if (!theme) return [];
 
         const steps = WORKFLOW_STEPS;
         const currentIdx = steps.findIndex((s) => s.key === workflowState.currentStep);
-        const progress = currentIdx >= 0 ? currentIdx : 0;
-        const total = steps.length;
+        if (currentIdx < 0) return [];
 
+        const current = steps[currentIdx];
         const lines: string[] = [];
         lines.push('');
 
-        // 第一行：进度百分比和当前阶段
-        const percent = Math.round((progress / (total - 1)) * 100);
-        const currentStep = steps[currentIdx];
-        const currentLabel = currentStep
-            ? `${theme.fg('accent', theme.bold(currentStep.label))}`
-            : theme.fg('muted', '等待开始');
+        // 当前阶段行
+        const stepNum = theme.fg('accent', current.num);
+        const stepName = theme.fg('accent', theme.bold(current.label));
+        const currentLine = `  ▶ 当前阶段  ${stepNum}  ${stepName}`;
+        lines.push(truncateToWidth(currentLine, width));
 
-        const leftPart = `${theme.fg('muted', '工作流进度')} ${theme.fg('accent', `${percent}%`)}`;
-        const gap = width - visibleWidth(leftPart) - visibleWidth(currentLabel) - 2;
-        const topLine = gap > 0
-            ? `${leftPart}${' '.repeat(gap)}${currentLabel}`
-            : truncateToWidth(`${leftPart} ${currentLabel}`, width);
-        lines.push(truncateToWidth(topLine, width));
+        // 简洁进度条：每个阶段一个字符块
+        // 已完成: ━━━  当前: ▶━━  未开始: ┄┄┄
+        const segWidth = Math.max(3, Math.floor((width - 8) / steps.length));
+        const barParts: string[] = [];
 
-        // 第二行：进度条
-        const barTotalWidth = Math.max(20, width - 4);
-        const filled = Math.round((progress / (total - 1)) * barTotalWidth);
-        const empty = barTotalWidth - filled;
-        const bar = theme.fg('accent', '━'.repeat(filled)) + theme.fg('dim', '─'.repeat(empty));
-        lines.push(`  ${bar}`);
-
-        // 计算列宽（固定列宽，严格对齐）
-        const colWidth = Math.max(6, Math.floor((width - 4) / total));
-        const margin = Math.max(0, Math.floor((width - colWidth * total) / 2));
-        const leftPad = ' '.repeat(margin);
-
-        // 居中对齐辅助函数
-        const center = (str: string, w: number): string => {
-            const vw = visibleWidth(str);
-            if (vw >= w) return str;
-            const left = Math.floor((w - vw) / 2);
-            const right = w - vw - left;
-            return ' '.repeat(left) + str + ' '.repeat(right);
-        };
-
-        // 第三行：状态符号
-        const symbolParts = steps.map((step, i) => {
-            const isDone = workflowState.completedSteps.has(step.key);
+        for (let i = 0; i < steps.length; i++) {
+            const isDone = workflowState.completedSteps.has(steps[i].key);
             const isActive = i === currentIdx;
-            let sym: string;
-            if (isDone) sym = theme.fg('success', '✓');
-            else if (isActive) sym = theme.fg('accent', '▶');
-            else sym = theme.fg('dim', '○');
-            return center(sym, colWidth);
-        });
-        lines.push(leftPad + symbolParts.join(''));
 
-        // 第四行：序号
-        const numParts = steps.map((step, i) => {
-            const isDone = workflowState.completedSteps.has(step.key);
-            const isActive = i === currentIdx;
-            let num: string;
-            if (isActive) num = theme.fg('accent', theme.bold(step.icon));
-            else if (isDone) num = theme.fg('success', step.icon);
-            else num = theme.fg('dim', step.icon);
-            return center(num, colWidth);
-        });
-        lines.push(leftPad + numParts.join(''));
+            if (isDone) {
+                barParts.push(theme.fg('success', '━'.repeat(segWidth)));
+            } else if (isActive) {
+                barParts.push(theme.fg('accent', '▶' + '━'.repeat(segWidth - 1)));
+            } else {
+                barParts.push(theme.fg('dim', '┄'.repeat(segWidth)));
+            }
+        }
 
-        // 第五行：步骤名称（前两字）
-        const nameParts = steps.map((step, i) => {
-            const isDone = workflowState.completedSteps.has(step.key);
-            const isActive = i === currentIdx;
-            const short = step.label.slice(0, 2);
-            let name: string;
-            if (isActive) name = theme.fg('accent', theme.bold(short));
-            else if (isDone) name = theme.fg('success', short);
-            else name = theme.fg('dim', short);
-            return center(name, colWidth);
-        });
-        lines.push(leftPad + nameParts.join(''));
+        const barLine = '  ' + barParts.join('');
+        lines.push(truncateToWidth(barLine, width));
         lines.push('');
 
-        return lines.map((line) => truncateToWidth(line, width));
+        return lines;
     }
 
     invalidate(): void {
@@ -273,80 +222,62 @@ class ParallelTaskPanel implements Component {
         if (this.cachedLines && this.cachedWidth === width) {
             return this.cachedLines;
         }
-
-        const lines = this.buildTaskPanel(width);
+        const lines = this.build(width);
         this.cachedLines = lines;
         this.cachedWidth = width;
         return lines;
     }
 
-    private buildTaskPanel(width: number): string[] {
+    private build(width: number): string[] {
         const theme = globalTheme;
         if (!theme) return [];
 
-        const tasks = workflowState.parallelTasks.slice(-10);
+        const tasks = workflowState.parallelTasks.slice(-8);
         if (tasks.length === 0) return [];
 
         const lines: string[] = [];
-
-        // 顶部分隔线
         lines.push(theme.fg('borderMuted', '─'.repeat(width)));
 
-        // 标题行
-        const runningCount = tasks.filter((t) => t.status === 'running').length;
-        const doneCount = tasks.filter((t) => t.status === 'done').length;
-        const errorCount = tasks.filter((t) => t.status === 'error').length;
+        const running = tasks.filter((t) => t.status === 'running').length;
+        const done = tasks.filter((t) => t.status === 'done').length;
+        const error = tasks.filter((t) => t.status === 'error').length;
 
-        const titleParts: string[] = [theme.bold('并行任务')];
-        if (runningCount > 0) titleParts.push(theme.fg('accent', `${runningCount} 进行中`));
-        if (doneCount > 0) titleParts.push(theme.fg('success', `${doneCount} 完成`));
-        if (errorCount > 0) titleParts.push(theme.fg('error', `${errorCount} 失败`));
-
-        lines.push(` ${titleParts.join('  |  ')}`);
+        const parts: string[] = [theme.bold('任务')];
+        if (running > 0) parts.push(theme.fg('accent', `${running} 进行中`));
+        if (done > 0) parts.push(theme.fg('success', `${done} 完成`));
+        if (error > 0) parts.push(theme.fg('error', `${error} 失败`));
+        lines.push(` ${parts.join('  |  ')}`);
         lines.push(theme.fg('borderMuted', '─'.repeat(width)));
 
-        // 任务列表
         for (const task of tasks) {
             const icon =
-                task.status === 'done'
-                    ? theme.fg('success', '✓')
-                    : task.status === 'error'
-                      ? theme.fg('error', '✗')
-                      : task.status === 'running'
-                        ? theme.fg('accent', '▶')
-                        : theme.fg('dim', '○');
+                task.status === 'done' ? theme.fg('success', '✓')
+                    : task.status === 'error' ? theme.fg('error', '✗')
+                        : task.status === 'running' ? theme.fg('accent', '▶')
+                            : theme.fg('dim', '○');
 
-            const name = truncateToWidth(task.name, Math.max(20, width - 35));
-            const duration = task.endTime
+            const name = truncateToWidth(task.name, Math.max(16, width - 30));
+            const dur = task.endTime
                 ? `${((task.endTime - task.startTime) / 1000).toFixed(1)}s`
                 : `${((Date.now() - task.startTime) / 1000).toFixed(1)}s`;
 
-            const statusColor =
-                task.status === 'done'
-                    ? 'success'
-                    : task.status === 'error'
-                      ? 'error'
-                      : task.status === 'running'
-                        ? 'accent'
-                        : 'muted';
+            const sc =
+                task.status === 'done' ? 'success'
+                    : task.status === 'error' ? 'error'
+                        : task.status === 'running' ? 'accent'
+                            : 'muted';
+            const sl =
+                task.status === 'running' ? '进行中'
+                    : task.status === 'done' ? '完成'
+                        : task.status === 'error' ? '失败' : '等待';
 
-            const statusLabel =
-                task.status === 'running'
-                    ? '进行中'
-                    : task.status === 'done'
-                      ? '完成'
-                      : task.status === 'error'
-                        ? '失败'
-                        : '等待';
-
-            const rightPart = `${theme.fg('dim', duration)} ${theme.fg(statusColor, statusLabel)}`;
-            const gap = Math.max(1, width - visibleWidth(`  ${icon} ${name}  `) - visibleWidth(rightPart));
-
-            lines.push(`  ${icon} ${name}${' '.repeat(gap)}${rightPart}`);
+            const right = `${theme.fg('dim', dur)} ${theme.fg(sc, sl)}`;
+            const gap = Math.max(1, width - visibleWidth(`  ${icon} ${name}  `) - visibleWidth(right));
+            lines.push(`  ${icon} ${name}${' '.repeat(gap)}${right}`);
         }
 
         lines.push('');
-        return lines.map((line) => truncateToWidth(line, width));
+        return lines.map((l) => truncateToWidth(l, width));
     }
 
     invalidate(): void {
@@ -364,9 +295,15 @@ let globalTheme: Theme | undefined;
 export function installWorkflowUI(pi: ExtensionAPI, ctx: ExtensionContext): void {
     globalTheme = ctx.ui.theme;
 
-    // 1. 安装工作流进度条 widget（编辑器上方）
     const progressBar = new WorkflowProgressBar();
-    ctx.ui.setWidget('raccoon-workflow-progress', (_tui, theme) => {
+    progressBarRef = progressBar;
+
+    const taskPanel = new ParallelTaskPanel();
+    taskPanelRef = taskPanel;
+
+    // 1. 进度条 widget（编辑器上方）
+    ctx.ui.setWidget('raccoon-workflow-progress', (tui, theme) => {
+        tuiRef = tui;
         globalTheme = theme;
         return {
             render: (w: number) => progressBar.render(w),
@@ -374,11 +311,11 @@ export function installWorkflowUI(pi: ExtensionAPI, ctx: ExtensionContext): void
         };
     });
 
-    // 2. 安装并行任务面板 widget（编辑器下方）
-    const taskPanel = new ParallelTaskPanel();
+    // 2. 任务面板 widget（编辑器下方）
     ctx.ui.setWidget(
         'raccoon-parallel-tasks',
-        (_tui, theme) => {
+        (tui, theme) => {
+            tuiRef = tui;
             globalTheme = theme;
             return {
                 render: (w: number) => taskPanel.render(w),
@@ -388,7 +325,7 @@ export function installWorkflowUI(pi: ExtensionAPI, ctx: ExtensionContext): void
         { placement: 'belowEditor' },
     );
 
-    // 3. 监听工具执行事件来更新状态
+    // 3. 监听工具执行
     pi.on('tool_execution_start', (event) => {
         advanceWorkflowStep(event.toolName);
     });
@@ -397,10 +334,8 @@ export function installWorkflowUI(pi: ExtensionAPI, ctx: ExtensionContext): void
         completeTask(event.toolName, !event.isError);
     });
 
-    // 4. 会话开始时重置状态
+    // 4. 会话开始时重置
     pi.on('session_start', () => {
         resetWorkflowState();
-        progressBar.invalidate();
-        taskPanel.invalidate();
     });
 }
