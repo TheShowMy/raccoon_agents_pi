@@ -21,6 +21,7 @@ import {
     scanAvailableModels,
     type ModelTier,
 } from './model-tier.js';
+import { generateReviewReport, formatReviewFramework, formatDiffForReview } from './code-review.js';
 
 // ── 辅助函数 ──────────────────────────────────────────────
 
@@ -379,21 +380,11 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 );
 
                 if (diffResult.code === 0 && diffResult.stdout.trim()) {
-                    const diffLines = diffResult.stdout.split('\n');
-                    if (diffLines.length > 300) {
-                        lines.push('');
-                        lines.push(`### Diff（前 300 行，共 ${diffLines.length} 行）`);
-                        lines.push('```diff');
-                        lines.push(diffLines.slice(0, 300).join('\n'));
-                        lines.push('```');
-                        lines.push(`（省略 ${diffLines.length - 300} 行）`);
-                    } else {
-                        lines.push('');
-                        lines.push(`### Diff（${diffLines.length} 行）`);
-                        lines.push('```diff');
-                        lines.push(diffResult.stdout);
-                        lines.push('```');
-                    }
+                    const report = generateReviewReport(diffResult.stdout);
+                    lines.push(formatReviewFramework(report));
+                    lines.push('');
+                    lines.push('### Diff（代码供审核参考）');
+                    lines.push(formatDiffForReview(diffResult.stdout, 300));
                 }
 
                 return ok(lines.join('\n'));
@@ -454,21 +445,11 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 );
 
                 if (diffResult.code === 0 && diffResult.stdout.trim()) {
-                    const diffLines = diffResult.stdout.split('\n');
-                    if (diffLines.length > 300) {
-                        lines.push('');
-                        lines.push(`### Diff（前 300 行，共 ${diffLines.length} 行）`);
-                        lines.push('```diff');
-                        lines.push(diffLines.slice(0, 300).join('\n'));
-                        lines.push('```');
-                        lines.push(`（省略 ${diffLines.length - 300} 行）`);
-                    } else {
-                        lines.push('');
-                        lines.push(`### Diff（${diffLines.length} 行）`);
-                        lines.push('```diff');
-                        lines.push(diffResult.stdout);
-                        lines.push('```');
-                    }
+                    const report = generateReviewReport(diffResult.stdout);
+                    lines.push(formatReviewFramework(report));
+                    lines.push('');
+                    lines.push('### Diff（代码供审核参考）');
+                    lines.push(formatDiffForReview(diffResult.stdout, 300));
                 }
 
                 return ok(lines.join('\n'));
