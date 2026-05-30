@@ -42,7 +42,7 @@ const WORKFLOW_STEPS: StepInfo[] = [
     { key: 'push', label: '推送分支', icon: '7' },
     { key: 'pr-create', label: '创建 PR', icon: '8' },
     { key: 'review', label: '代码审核', icon: '9' },
-    { key: 'merge', label: '合并代码', icon: '0' },
+    { key: 'merge', label: '合并代码', icon: '10' },
 ];
 
 // 工具名到阶段的映射
@@ -185,7 +185,7 @@ class WorkflowProgressBar implements Component {
         const percent = Math.round((progress / (total - 1)) * 100);
         const currentStep = steps[currentIdx];
         const currentLabel = currentStep
-            ? `${currentStep.icon} ${theme.fg('accent', theme.bold(currentStep.label))}`
+            ? `${theme.fg('accent', theme.bold(currentStep.label))}`
             : theme.fg('muted', '等待开始');
 
         const leftPart = `${theme.fg('muted', '工作流进度')} ${theme.fg('accent', `${percent}%`)}`;
@@ -195,48 +195,63 @@ class WorkflowProgressBar implements Component {
             : truncateToWidth(`${leftPart} ${currentLabel}`, width);
         lines.push(truncateToWidth(topLine, width));
 
-        // 第二行：进度条（━ ━ ━ ━ ━ ─ ─ ─）
+        // 第二行：进度条
         const barTotalWidth = Math.max(20, width - 4);
         const filled = Math.round((progress / (total - 1)) * barTotalWidth);
         const empty = barTotalWidth - filled;
         const bar = theme.fg('accent', '━'.repeat(filled)) + theme.fg('dim', '─'.repeat(empty));
         lines.push(`  ${bar}`);
 
-        // 第三行：步骤指示器（带图标和标签）
-        const stepWidth = Math.max(7, Math.floor((width - 4) / total));
-        const stepLineParts: string[] = [];
+        // 计算列宽（固定列宽，严格对齐）
+        const colWidth = Math.max(6, Math.floor((width - 4) / total));
+        const margin = Math.max(0, Math.floor((width - colWidth * total) / 2));
+        const leftPad = ' '.repeat(margin);
 
-        for (let i = 0; i < total; i++) {
-            const step = steps[i];
+        // 居中对齐辅助函数
+        const center = (str: string, w: number): string => {
+            const vw = visibleWidth(str);
+            if (vw >= w) return str;
+            const left = Math.floor((w - vw) / 2);
+            const right = w - vw - left;
+            return ' '.repeat(left) + str + ' '.repeat(right);
+        };
+
+        // 第三行：状态符号
+        const symbolParts = steps.map((step, i) => {
             const isDone = workflowState.completedSteps.has(step.key);
             const isActive = i === currentIdx;
+            let sym: string;
+            if (isDone) sym = theme.fg('success', '✓');
+            else if (isActive) sym = theme.fg('accent', '▶');
+            else sym = theme.fg('dim', '○');
+            return center(sym, colWidth);
+        });
+        lines.push(leftPad + symbolParts.join(''));
 
-            if (isDone) {
-                stepLineParts.push(theme.fg('success', `✓${step.icon}`));
-            } else if (isActive) {
-                stepLineParts.push(theme.fg('accent', `▶${step.icon}`));
-            } else {
-                stepLineParts.push(theme.fg('dim', `○${step.icon}`));
-            }
-        }
-        lines.push('  ' + stepLineParts.join(' '));
+        // 第四行：序号
+        const numParts = steps.map((step, i) => {
+            const isDone = workflowState.completedSteps.has(step.key);
+            const isActive = i === currentIdx;
+            let num: string;
+            if (isActive) num = theme.fg('accent', theme.bold(step.icon));
+            else if (isDone) num = theme.fg('success', step.icon);
+            else num = theme.fg('dim', step.icon);
+            return center(num, colWidth);
+        });
+        lines.push(leftPad + numParts.join(''));
 
-        // 第四行：步骤名称（只显示前两字）
-        const labelParts: string[] = [];
-        for (let i = 0; i < total; i++) {
-            const step = steps[i];
+        // 第五行：步骤名称（前两字）
+        const nameParts = steps.map((step, i) => {
             const isDone = workflowState.completedSteps.has(step.key);
             const isActive = i === currentIdx;
             const short = step.label.slice(0, 2);
-            if (isActive) {
-                labelParts.push(theme.fg('accent', theme.bold(short)));
-            } else if (isDone) {
-                labelParts.push(theme.fg('success', short));
-            } else {
-                labelParts.push(theme.fg('dim', short));
-            }
-        }
-        lines.push('   ' + labelParts.join('  '));
+            let name: string;
+            if (isActive) name = theme.fg('accent', theme.bold(short));
+            else if (isDone) name = theme.fg('success', short);
+            else name = theme.fg('dim', short);
+            return center(name, colWidth);
+        });
+        lines.push(leftPad + nameParts.join(''));
         lines.push('');
 
         return lines.map((line) => truncateToWidth(line, width));
