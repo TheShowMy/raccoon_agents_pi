@@ -1,6 +1,6 @@
 {
     "name": "raccoon-agents",
-    "version": "0.1.0",
+    "version": "0.2.0",
     "private": true,
     "type": "module",
     "description": "浣熊特工队 Pi 启动向导扩展",

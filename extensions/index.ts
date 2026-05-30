@@ -3,19 +3,17 @@ import type { ExtensionAPI, ExtensionContext, Theme } from '@earendil-works/pi-c
 import { VERSION } from '@earendil-works/pi-coding-agent';
 import type { Component, TUI } from '@earendil-works/pi-tui';
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
+import {
+    type GitStatus,
+    EMPTY_GIT_STATUS,
+    isGitStatusClean,
+    isGitWorkTree,
+    readGitStatus as readGitStatusFromUtils,
+} from './git-utils.js';
+import { registerGitWorkflowTools } from './git-workflow.js';
+import { registerProjectInfoTool } from './project-info.js';
+import { WORKFLOW_SYSTEM_PROMPT } from './workflow-prompt.js';
 
-interface GitStatus {
-    kind: 'loading' | 'ready' | 'not-git' | 'error';
-    branch: string;
-    upstream?: string;
-    ahead: number;
-    behind: number;
-    staged: number;
-    unstaged: number;
-    untracked: number;
-    conflicts: number;
-    error?: string;
-}
 
 interface GitFooterController {
     scheduleRefresh(): void;
@@ -31,16 +29,6 @@ interface CommandResult {
 let guardStarted = false;
 let gitFooterController: GitFooterController | undefined;
 
-const EMPTY_GIT_STATUS: GitStatus = {
-    kind: 'loading',
-    branch: 'loading',
-    ahead: 0,
-    behind: 0,
-    staged: 0,
-    unstaged: 0,
-    untracked: 0,
-    conflicts: 0,
-};
 
 function headerLines(theme: Theme): string[] {
     const accent = (text: string) => theme.fg('accent', text);
@@ -118,72 +106,6 @@ function formatCommandError(label: string, result: CommandResult): string {
     return `${label} 执行失败，退出码 ${result.code}${detail ? `\n${detail}` : ''}`;
 }
 
-function parseBranchHeader(line: string, status: GitStatus) {
-    const body = line.slice(3).trim();
-    const bracketIndex = body.indexOf(' [');
-    const branchPart = bracketIndex >= 0 ? body.slice(0, bracketIndex) : body;
-    const meta = bracketIndex >= 0 ? body.slice(bracketIndex + 2, -1) : '';
-    const [branch, upstream] = branchPart.split('...');
-
-    status.branch = branch || 'unknown';
-    status.upstream = upstream;
-
-    const ahead = meta.match(/ahead (\d+)/);
-    const behind = meta.match(/behind (\d+)/);
-    status.ahead = ahead ? Number(ahead[1]) : 0;
-    status.behind = behind ? Number(behind[1]) : 0;
-}
-
-function parseGitStatusOutput(stdout: string): GitStatus {
-    const status: GitStatus = {
-        ...EMPTY_GIT_STATUS,
-        kind: 'ready',
-        branch: 'unknown',
-    };
-
-    for (const line of stdout.split(/\r?\n/)) {
-        if (!line) continue;
-        if (line.startsWith('## ')) {
-            parseBranchHeader(line, status);
-            continue;
-        }
-
-        const indexStatus = line[0] ?? ' ';
-        const worktreeStatus = line[1] ?? ' ';
-        const pair = `${indexStatus}${worktreeStatus}`;
-
-        if (pair === '??') {
-            status.untracked++;
-            continue;
-        }
-
-        if (indexStatus === 'U' || worktreeStatus === 'U' || pair === 'AA' || pair === 'DD') {
-            status.conflicts++;
-            continue;
-        }
-
-        if (indexStatus !== ' ' && indexStatus !== '?') {
-            status.staged++;
-        }
-        if (worktreeStatus !== ' ' && worktreeStatus !== '?') {
-            status.unstaged++;
-        }
-    }
-
-    return status;
-}
-
-function isGitStatusClean(status: GitStatus): boolean {
-    return status.staged + status.unstaged + status.untracked + status.conflicts === 0;
-}
-
-async function isGitWorkTree(pi: ExtensionAPI, cwd: string): Promise<boolean> {
-    const result = await pi.exec('git', ['rev-parse', '--is-inside-work-tree'], {
-        cwd,
-        timeout: 1_500,
-    });
-    return result.code === 0 && result.stdout.trim() === 'true';
-}
 
 async function initializeGitRepository(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
     const confirmed = await ctx.ui.confirm(
@@ -219,28 +141,6 @@ async function initializeGitRepository(pi: ExtensionAPI, ctx: ExtensionContext):
     return false;
 }
 
-async function readGitStatus(pi: ExtensionAPI, cwd: string): Promise<GitStatus> {
-    const result = await pi.exec('git', ['status', '--porcelain=v1', '--branch'], {
-        cwd,
-        timeout: 1_500,
-    });
-
-    if (result.code === 0) {
-        return parseGitStatusOutput(result.stdout);
-    }
-
-    const detail = (result.stderr || result.stdout).trim();
-    if (/not a git repository/i.test(detail)) {
-        return { ...EMPTY_GIT_STATUS, kind: 'not-git', branch: 'no git' };
-    }
-
-    return {
-        ...EMPTY_GIT_STATUS,
-        kind: 'error',
-        branch: 'git error',
-        error: detail.split(/\r?\n/).slice(-1)[0] || `git exited ${result.code}`,
-    };
-}
 
 function renderGitSummary(theme: Theme, status: GitStatus): string {
     if (status.kind === 'loading') {
@@ -299,7 +199,7 @@ function installGitFooter(pi: ExtensionAPI, ctx: ExtensionContext): GitFooterCon
 
         inFlight = true;
         try {
-            status = await readGitStatus(pi, ctx.cwd);
+            status = await readGitStatusFromUtils(pi, ctx.cwd);
         } catch (error) {
             status = {
                 ...EMPTY_GIT_STATUS,
@@ -409,6 +309,10 @@ export default function raccoonAgents(pi: ExtensionAPI) {
 
         installHeader(ctx);
 
+        // 注册工具（幂等，多次调用只有第一次生效）
+        registerProjectInfoTool(pi);
+        registerGitWorkflowTools(pi);
+
         if (guardStarted) return;
         guardStarted = true;
 
@@ -424,6 +328,13 @@ export default function raccoonAgents(pi: ExtensionAPI) {
             ctx.ui.notify('Git 检查失败，已退出。', 'error');
             setTimeout(() => ctx.shutdown(), 250);
             guardStarted = false;
+        }
+    });
+
+    pi.on('before_agent_start', async (event) => {
+        // 追加 Raccoon 工作流指导到 system prompt 末尾
+        if (event.systemPrompt) {
+            return { systemPrompt: `${event.systemPrompt}\n\n${WORKFLOW_SYSTEM_PROMPT}` };
         }
     });
 }
