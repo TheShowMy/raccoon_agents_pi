@@ -1,6 +1,6 @@
 /**
- * Git 工作流工具 — 注册 12 个 LLM 可调用工具，
- * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并、测试运行、Issue 管理与拆分、模型档位配置与路由全流程。
+ * Git 工作流工具 — 注册 13 个 LLM 可调用工具，
+ * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并、测试运行、Issue 管理与拆分、模型档位扫描/配置/路由全流程。
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -17,6 +17,8 @@ import {
     getModelsByTier,
     routeModel,
     recommendModelForTask,
+    scanAllModels,
+    scanAvailableModels,
     type ModelTier,
 } from './model-tier.js';
 
@@ -1339,7 +1341,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
         name: 'raccoon_model_config',
         label: '模型档位配置',
         description:
-            '设置或查看模型档位（high/medium/low）。档位用于任务自动路由。配置保存在 ~/.config/raccoon-agents/models.json。',
+            '设置或查看模型档位（high/medium/low）。默认新模型为 medium。档位用于任务自动路由。配置保存在 ~/.config/raccoon-agents/models.json。',
         parameters: Type.Object({
             action: Type.Union(
                 [
@@ -1353,7 +1355,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
             tier: Type.Optional(
                 Type.Union(
                     [Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')],
-                    { description: '档位：high（高档）/ medium（中档）/ low（低档）' },
+                    { description: '档位：high（高档）/ medium（中档）/ low（低档），默认 medium' },
                 ),
             ),
         }),
@@ -1364,45 +1366,66 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 const lines: string[] = [];
                 lines.push('## 模型档位配置');
                 lines.push('');
-                lines.push('| 模型 | 档位 |');
-                lines.push('|------|------|');
 
+                // 已配置档位的模型
                 const byTier: Record<ModelTier, string[]> = { high: [], medium: [], low: [] };
                 for (const [modelId, tier] of Object.entries(config.models)) {
                     byTier[tier].push(modelId);
                 }
 
-                for (const tier of ['high', 'medium', 'low'] as ModelTier[]) {
-                    if (byTier[tier].length > 0) {
-                        lines.push(`| **${tier === 'high' ? '高档' : tier === 'medium' ? '中档' : '低档'}** | |`);
+                const currentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+                const hasConfigured = Object.keys(config.models).length > 0;
+
+                if (hasConfigured) {
+                    lines.push('### 已配置档位');
+                    lines.push('');
+                    lines.push('| 模型 | 档位 |');
+                    lines.push('|------|------|');
+                    for (const tier of ['high', 'medium', 'low'] as ModelTier[]) {
                         for (const modelId of byTier[tier]) {
                             const marker =
-                                ctx.model && (modelId === `${ctx.model.provider}/${ctx.model.id}` ||
-                                    `${ctx.model.provider}/${ctx.model.id}`.startsWith(modelId))
+                                currentModelId &&
+                                (modelId === currentModelId || currentModelId.startsWith(modelId))
                                     ? ' ← 当前'
                                     : '';
-                            lines.push(`| ${modelId} | ${tier}${marker} |`);
+                            const tierLabel = tier === 'high' ? '高档' : tier === 'medium' ? '中档' : '低档';
+                            lines.push(`| ${modelId} | ${tierLabel}${marker} |`);
                         }
                     }
+                    lines.push('');
                 }
 
-                lines.push('');
-                lines.push('### 使用示例');
-                lines.push('```');
-                lines.push('raccoon_model_config action=set model=openai/gpt-4o tier=high');
-                lines.push('raccoon_model_config action=set model=openai/gpt-4o-mini tier=low');
-                lines.push('raccoon_model_config action=remove model=openai/gpt-4o-mini');
-                lines.push('```');
+                // 未配置档位的模型（从 Pi ModelRegistry 扫描）
+                const allModels = scanAllModels(ctx.modelRegistry);
+                const unconfigured = allModels.filter((id) => !getModelTier(config, id));
+
+                if (unconfigured.length > 0) {
+                    lines.push('### 未配置档位（默认 medium）');
+                    lines.push('');
+                    for (const modelId of unconfigured) {
+                        const marker = modelId === currentModelId ? ' ← 当前' : '';
+                        lines.push(`- ${modelId}${marker}`);
+                    }
+                    lines.push('');
+                    lines.push('> 💡 用 `raccoon_model_scan` 批量设置档位，或 `raccoon_model_config action=set model=xxx tier=high` 单个设置。');
+                }
+
+                if (!hasConfigured && unconfigured.length === 0) {
+                    lines.push('暂无模型配置。');
+                    lines.push('');
+                    lines.push('> 💡 用 `raccoon_model_scan` 扫描并设置档位。');
+                }
 
                 return ok(lines.join('\n'));
             }
 
             if (params.action === 'set') {
-                if (!params.model || !params.tier) {
-                    return fail('set 操作需要提供 model 和 tier 参数。');
+                if (!params.model) {
+                    return fail('set 操作需要提供 model 参数。');
                 }
-                setModelTier(config, params.model, params.tier);
-                return ok(`✅ 已设置 ${params.model} 为 ${params.tier} 档`);
+                const tier = params.tier ?? 'medium';
+                setModelTier(config, params.model, tier);
+                return ok(`✅ 已设置 ${params.model} 为 ${tier} 档`);
             }
 
             if (params.action === 'remove') {
@@ -1421,23 +1444,87 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
     });
 
     // ════════════════════════════════════════════════════════
-    // 12. raccoon_model_list
+    // 12. raccoon_model_scan
+    // ════════════════════════════════════════════════════════
+
+    pi.registerTool({
+        name: 'raccoon_model_scan',
+        label: '扫描模型并设置档位',
+        description:
+            '扫描 Pi 中已配置的所有模型，显示未设置档位的模型列表，可批量设置档位。',
+        parameters: Type.Object({}),
+        async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+            const config = loadTierConfig();
+            const currentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+
+            const allModels = scanAllModels(ctx.modelRegistry);
+            const availableModels = scanAvailableModels(ctx.modelRegistry);
+            const unconfigured = allModels.filter((id) => !getModelTier(config, id));
+
+            if (unconfigured.length === 0) {
+                return ok('✅ 所有模型已配置档位。用 `raccoon_model_list` 查看详情。');
+            }
+
+            const lines: string[] = [];
+            lines.push('## 扫描结果');
+            lines.push(`共发现 ${allModels.length} 个模型，其中 ${unconfigured.length} 个未配置档位。`);
+            lines.push('');
+            lines.push('### 未配置档位的模型');
+            lines.push('');
+            lines.push('| # | 模型 | 状态 |');
+            lines.push('|---|------|------|');
+
+            let index = 1;
+            for (const modelId of unconfigured) {
+                const isAvailable = availableModels.includes(modelId);
+                const marker = modelId === currentModelId ? ' ← 当前' : '';
+                const status = isAvailable ? '✅ 可用' : '⚠️ 需配置 API Key';
+                lines.push(`| ${index} | ${modelId}${marker} | ${status} |`);
+                index++;
+            }
+
+            lines.push('');
+            lines.push('### 批量设置命令');
+            lines.push('');
+            lines.push('```');
+            for (const modelId of unconfigured) {
+                // 简单启发式：名字含 mini/small/flash 的低档，含 pro/sonnet/opus/claude-4/gpt-4o 的高档，其余中档
+                const lower = modelId.toLowerCase();
+                let tier: ModelTier = 'medium';
+                if (lower.includes('mini') || lower.includes('small') || lower.includes('flash') || lower.includes('lite')) {
+                    tier = 'low';
+                } else if (lower.includes('pro') || lower.includes('sonnet') || lower.includes('opus') || lower.includes('claude-4') || lower.includes('gpt-4o')) {
+                    tier = 'high';
+                }
+                lines.push(`raccoon_model_config action=set model=${modelId} tier=${tier}`);
+            }
+            lines.push('```');
+            lines.push('');
+            lines.push('> 💡 复制上面的命令执行即可批量设置。也可逐个修改 tier 值。');
+
+            return ok(lines.join('\n'));
+        },
+    });
+
+    // ════════════════════════════════════════════════════════
+    // 13. raccoon_model_list
     // ════════════════════════════════════════════════════════
 
     pi.registerTool({
         name: 'raccoon_model_list',
         label: '模型档位列表',
-        description: '列出当前所有模型的档位配置，按档位分组展示。',
+        description: '列出当前所有模型的档位配置（含已配置和未配置），按档位分组展示。',
         parameters: Type.Object({}),
         async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
             const config = loadTierConfig();
             const currentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+            const allModels = scanAllModels(ctx.modelRegistry);
             const currentTier = currentModelId ? getModelTier(config, currentModelId) : null;
 
             const lines: string[] = [];
             lines.push('## 模型档位配置');
             if (currentModelId) {
-                lines.push(`当前模型：**${currentModelId}** (${currentTier ?? '未配置'})`);
+                lines.push(`当前模型：**${currentModelId}** (${currentTier ?? '未配置，默认 medium'})`);
             }
             lines.push('');
 
@@ -1453,6 +1540,20 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                         lines.push(`- ${modelId}${marker}`);
                     }
                 }
+                lines.push('');
+            }
+
+            // 未配置档位的模型
+            const unconfigured = allModels.filter((id) => !getModelTier(config, id));
+            if (unconfigured.length > 0) {
+                lines.push('### ⚪ 未配置档位（默认 medium）');
+                lines.push(`（${unconfigured.length} 个）`);
+                for (const modelId of unconfigured) {
+                    const marker = modelId === currentModelId ? ' ← 当前' : '';
+                    lines.push(`- ${modelId}${marker}`);
+                }
+                lines.push('');
+                lines.push('> 💡 用 `raccoon_model_scan` 批量设置档位。');
                 lines.push('');
             }
 

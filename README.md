@@ -72,8 +72,9 @@ staged 0  unstaged 0  untracked 0  conflicts 0   raccoon-agents  anthropic/claud
 | `raccoon_issue_create` | 创建 Git Issue，支持标题、描述和标签，自动适配平台 |
 | `raccoon_issue_list` | 列出最近的开放 Issue，支持按标签筛选 |
 | `raccoon_issue_breakdown` | 读取 Issue 详情并提供任务拆分框架（前端/后端/测试/文档/部署），含模型档位推荐 |
-| `raccoon_model_config` | 设置/查看/删除模型档位（high/medium/low），支持自动路由 |
-| `raccoon_model_list` | 列出所有模型档位配置，按档位分组，显示当前模型 |
+| `raccoon_model_scan` | 扫描 Pi 中已配置的所有模型，显示未设档位的模型，生成批量设置命令 |
+| `raccoon_model_config` | 设置/查看/删除模型档位（high/medium/low），默认 medium，支持自动路由 |
+| `raccoon_model_list` | 列出所有模型档位配置（含已配置和未配置），按档位分组，显示当前模型 |
 | `raccoon_pr_create` | 创建 Pull Request / Merge Request，自动检测平台（GitHub `gh` / GitLab `glab`） |
 
 ### 3. 模型档位与自动路由
@@ -93,8 +94,9 @@ staged 0  unstaged 0  untracked 0  conflicts 0   raccoon-agents  anthropic/claud
 
 **管理命令**：
 ```
-raccoon_model_list                          # 查看所有模型档位
-raccoon_model_config action=set model=xxx tier=high   # 设置档位
+raccoon_model_scan                          # 扫描所有已配置模型，批量设置档位
+raccoon_model_list                          # 查看所有模型档位（含已配置和未配置）
+raccoon_model_config action=set model=xxx tier=high   # 设置档位（默认 medium）
 raccoon_model_config action=remove model=xxx          # 删除档位
 ```
 
@@ -188,7 +190,7 @@ raccoon-agents/
 ├── extensions/
 │   ├── index.ts                # 扩展主入口：UI 安装、事件监听、工具注册
 │   ├── project-info.ts         # raccoon_project_info 工具实现
-│   ├── git-workflow.ts         # 12 个 Git/PR/Issue/模型 工作流工具实现
+│   ├── git-workflow.ts         # 13 个 Git/PR/Issue/模型 工作流工具实现
 │   ├── git-utils.ts            # Git 工具函数（状态解析、命令执行）
 │   ├── model-tier.ts           # 模型档位配置与自动路由引擎
 │   └── workflow-prompt.ts      # 工作流 system prompt 模板
