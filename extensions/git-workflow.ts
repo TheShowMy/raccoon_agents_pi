@@ -1,6 +1,6 @@
 /**
- * Git 工作流工具 — 注册 10 个 LLM 可调用工具，
- * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并、测试运行、Issue 管理与拆分全流程。
+ * Git 工作流工具 — 注册 12 个 LLM 可调用工具，
+ * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并、测试运行、Issue 管理与拆分、模型档位配置与路由全流程。
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -8,6 +8,17 @@ import { join } from 'node:path';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { gitExec, isGitWorkTree, readGitStatus, detectGitHost, type GitHost } from './git-utils.js';
+import {
+    loadTierConfig,
+    saveTierConfig,
+    getModelTier,
+    setModelTier,
+    removeModelTier,
+    getModelsByTier,
+    routeModel,
+    recommendModelForTask,
+    type ModelTier,
+} from './model-tier.js';
 
 // ── 辅助函数 ──────────────────────────────────────────────
 
@@ -1119,16 +1130,57 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 lines.push(detail.body || '（无描述）');
                 lines.push('');
                 lines.push('---');
+
+                // 模型档位自动路由
+                const tierConfig = loadTierConfig();
+                const currentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+                const currentTier = currentModelId ? getModelTier(tierConfig, currentModelId) : null;
+
                 lines.push('### 建议的任务拆分框架');
                 lines.push('根据 Issue 内容，可按以下维度拆分子任务：');
                 lines.push('');
-                lines.push('1. **前端/UI** — 页面组件、交互逻辑、样式调整（推荐：擅长代码的模型如 GPT-4o / Claude Sonnet）');
-                lines.push('2. **后端/API** — 接口设计、数据模型、业务逻辑（推荐：推理能力强的模型如 Claude Sonnet / GPT-4o）');
-                lines.push('3. **测试** — 单元测试、集成测试、E2E 测试（推荐：快速轻量模型如 GPT-4o-mini）');
-                lines.push('4. **文档** — README、API 文档、CHANGELOG（推荐：擅长长文本的模型如 Gemini / Claude）');
-                lines.push('5. **配置/部署** — CI/CD、环境变量、依赖升级（推荐：通用模型即可）');
+
+                const taskDimensions = [
+                    { key: 'frontend', name: '前端/UI', desc: '页面组件、交互逻辑、样式调整' },
+                    { key: 'backend', name: '后端/API', desc: '接口设计、数据模型、业务逻辑' },
+                    { key: 'test', name: '测试', desc: '单元测试、集成测试、E2E 测试' },
+                    { key: 'docs', name: '文档', desc: 'README、API 文档、CHANGELOG' },
+                    { key: 'config', name: '配置/部署', desc: 'CI/CD、环境变量、依赖升级' },
+                ];
+
+                for (const dim of taskDimensions) {
+                    const { recommendedTier, routedTier, models, fallback } = recommendModelForTask(
+                        tierConfig,
+                        dim.key,
+                    );
+                    const tierLabel =
+                        routedTier === 'high' ? '高档' : routedTier === 'medium' ? '中档' : '低档';
+                    const recLabel =
+                        recommendedTier === 'high'
+                            ? '高档'
+                            : recommendedTier === 'medium'
+                              ? '中档'
+                              : '低档';
+                    const fallbackNote = fallback ? `（${recLabel}无模型，自动升至${tierLabel}）` : '';
+                    const modelList = models.slice(0, 3).join(' / ');
+                    const moreModels = models.length > 3 ? ` 等 ${models.length} 个` : '';
+
+                    lines.push(
+                        `1. **${dim.name}** — ${dim.desc} ${fallbackNote}`,
+                    );
+                    lines.push(`   - 推荐档位：${recLabel} → 实际路由：${tierLabel}`);
+                    lines.push(`   - 可用模型：${modelList}${moreModels}`);
+                    if (currentTier && currentTier !== routedTier) {
+                        lines.push(
+                            `   - ⚠️ 当前模型档位（${currentTier === 'high' ? '高档' : currentTier === 'medium' ? '中档' : '低档'}）与推荐档位不匹配，建议切换到 ${modelList.split(' / ')[0] ?? '对应档位模型'}`,
+                        );
+                    }
+                }
+
                 lines.push('');
                 lines.push('请结合 Issue 描述，判断哪些维度涉及本次需求，逐一实现。');
+                lines.push('');
+                lines.push('> 💡 用 `raccoon_model_config action=get` 查看/修改模型档位配置。');
 
                 return ok(lines.join('\n'));
             }
@@ -1213,16 +1265,57 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 lines.push(detail.description || '（无描述）');
                 lines.push('');
                 lines.push('---');
+
+                // 模型档位自动路由
+                const tierConfig = loadTierConfig();
+                const currentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+                const currentTier = currentModelId ? getModelTier(tierConfig, currentModelId) : null;
+
                 lines.push('### 建议的任务拆分框架');
                 lines.push('根据 Issue 内容，可按以下维度拆分子任务：');
                 lines.push('');
-                lines.push('1. **前端/UI** — 页面组件、交互逻辑、样式调整（推荐：擅长代码的模型如 GPT-4o / Claude Sonnet）');
-                lines.push('2. **后端/API** — 接口设计、数据模型、业务逻辑（推荐：推理能力强的模型如 Claude Sonnet / GPT-4o）');
-                lines.push('3. **测试** — 单元测试、集成测试、E2E 测试（推荐：快速轻量模型如 GPT-4o-mini）');
-                lines.push('4. **文档** — README、API 文档、CHANGELOG（推荐：擅长长文本的模型如 Gemini / Claude）');
-                lines.push('5. **配置/部署** — CI/CD、环境变量、依赖升级（推荐：通用模型即可）');
+
+                const taskDimensions = [
+                    { key: 'frontend', name: '前端/UI', desc: '页面组件、交互逻辑、样式调整' },
+                    { key: 'backend', name: '后端/API', desc: '接口设计、数据模型、业务逻辑' },
+                    { key: 'test', name: '测试', desc: '单元测试、集成测试、E2E 测试' },
+                    { key: 'docs', name: '文档', desc: 'README、API 文档、CHANGELOG' },
+                    { key: 'config', name: '配置/部署', desc: 'CI/CD、环境变量、依赖升级' },
+                ];
+
+                for (const dim of taskDimensions) {
+                    const { recommendedTier, routedTier, models, fallback } = recommendModelForTask(
+                        tierConfig,
+                        dim.key,
+                    );
+                    const tierLabel =
+                        routedTier === 'high' ? '高档' : routedTier === 'medium' ? '中档' : '低档';
+                    const recLabel =
+                        recommendedTier === 'high'
+                            ? '高档'
+                            : recommendedTier === 'medium'
+                              ? '中档'
+                              : '低档';
+                    const fallbackNote = fallback ? `（${recLabel}无模型，自动升至${tierLabel}）` : '';
+                    const modelList = models.slice(0, 3).join(' / ');
+                    const moreModels = models.length > 3 ? ` 等 ${models.length} 个` : '';
+
+                    lines.push(
+                        `1. **${dim.name}** — ${dim.desc} ${fallbackNote}`,
+                    );
+                    lines.push(`   - 推荐档位：${recLabel} → 实际路由：${tierLabel}`);
+                    lines.push(`   - 可用模型：${modelList}${moreModels}`);
+                    if (currentTier && currentTier !== routedTier) {
+                        lines.push(
+                            `   - ⚠️ 当前模型档位（${currentTier === 'high' ? '高档' : currentTier === 'medium' ? '中档' : '低档'}）与推荐档位不匹配，建议切换到 ${modelList.split(' / ')[0] ?? '对应档位模型'}`,
+                        );
+                    }
+                }
+
                 lines.push('');
                 lines.push('请结合 Issue 描述，判断哪些维度涉及本次需求，逐一实现。');
+                lines.push('');
+                lines.push('> 💡 用 `raccoon_model_config action=get` 查看/修改模型档位配置。');
 
                 return ok(lines.join('\n'));
             }
@@ -1235,6 +1328,145 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                 `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
                     '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
             );
+        },
+    });
+
+    // ════════════════════════════════════════════════════════
+    // 11. raccoon_model_config
+    // ════════════════════════════════════════════════════════
+
+    pi.registerTool({
+        name: 'raccoon_model_config',
+        label: '模型档位配置',
+        description:
+            '设置或查看模型档位（high/medium/low）。档位用于任务自动路由。配置保存在 ~/.config/raccoon-agents/models.json。',
+        parameters: Type.Object({
+            action: Type.Union(
+                [
+                    Type.Literal('set', { description: '设置模型档位' }),
+                    Type.Literal('get', { description: '查看当前配置' }),
+                    Type.Literal('remove', { description: '删除模型档位' }),
+                ],
+                { description: '操作类型：set/get/remove' },
+            ),
+            model: Type.Optional(Type.String({ description: '模型 ID（如 openai/gpt-4o）' })),
+            tier: Type.Optional(
+                Type.Union(
+                    [Type.Literal('high'), Type.Literal('medium'), Type.Literal('low')],
+                    { description: '档位：high（高档）/ medium（中档）/ low（低档）' },
+                ),
+            ),
+        }),
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            const config = loadTierConfig();
+
+            if (params.action === 'get') {
+                const lines: string[] = [];
+                lines.push('## 模型档位配置');
+                lines.push('');
+                lines.push('| 模型 | 档位 |');
+                lines.push('|------|------|');
+
+                const byTier: Record<ModelTier, string[]> = { high: [], medium: [], low: [] };
+                for (const [modelId, tier] of Object.entries(config.models)) {
+                    byTier[tier].push(modelId);
+                }
+
+                for (const tier of ['high', 'medium', 'low'] as ModelTier[]) {
+                    if (byTier[tier].length > 0) {
+                        lines.push(`| **${tier === 'high' ? '高档' : tier === 'medium' ? '中档' : '低档'}** | |`);
+                        for (const modelId of byTier[tier]) {
+                            const marker =
+                                ctx.model && (modelId === `${ctx.model.provider}/${ctx.model.id}` ||
+                                    `${ctx.model.provider}/${ctx.model.id}`.startsWith(modelId))
+                                    ? ' ← 当前'
+                                    : '';
+                            lines.push(`| ${modelId} | ${tier}${marker} |`);
+                        }
+                    }
+                }
+
+                lines.push('');
+                lines.push('### 使用示例');
+                lines.push('```');
+                lines.push('raccoon_model_config action=set model=openai/gpt-4o tier=high');
+                lines.push('raccoon_model_config action=set model=openai/gpt-4o-mini tier=low');
+                lines.push('raccoon_model_config action=remove model=openai/gpt-4o-mini');
+                lines.push('```');
+
+                return ok(lines.join('\n'));
+            }
+
+            if (params.action === 'set') {
+                if (!params.model || !params.tier) {
+                    return fail('set 操作需要提供 model 和 tier 参数。');
+                }
+                setModelTier(config, params.model, params.tier);
+                return ok(`✅ 已设置 ${params.model} 为 ${params.tier} 档`);
+            }
+
+            if (params.action === 'remove') {
+                if (!params.model) {
+                    return fail('remove 操作需要提供 model 参数。');
+                }
+                const removed = removeModelTier(config, params.model);
+                if (removed) {
+                    return ok(`✅ 已删除 ${params.model} 的档位配置`);
+                }
+                return fail(`未找到 ${params.model} 的档位配置`);
+            }
+
+            return fail(`未知操作：${params.action}`);
+        },
+    });
+
+    // ════════════════════════════════════════════════════════
+    // 12. raccoon_model_list
+    // ════════════════════════════════════════════════════════
+
+    pi.registerTool({
+        name: 'raccoon_model_list',
+        label: '模型档位列表',
+        description: '列出当前所有模型的档位配置，按档位分组展示。',
+        parameters: Type.Object({}),
+        async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
+            const config = loadTierConfig();
+            const currentModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : null;
+            const currentTier = currentModelId ? getModelTier(config, currentModelId) : null;
+
+            const lines: string[] = [];
+            lines.push('## 模型档位配置');
+            if (currentModelId) {
+                lines.push(`当前模型：**${currentModelId}** (${currentTier ?? '未配置'})`);
+            }
+            lines.push('');
+
+            for (const tier of ['high', 'medium', 'low'] as ModelTier[]) {
+                const models = getModelsByTier(config, tier);
+                const tierLabel = tier === 'high' ? '🔴 高档' : tier === 'medium' ? '🟡 中档' : '🟢 低档';
+                lines.push(`### ${tierLabel}（${models.length} 个）`);
+                if (models.length === 0) {
+                    lines.push('（无）');
+                } else {
+                    for (const modelId of models) {
+                        const marker = currentModelId === modelId ? ' ← 当前' : '';
+                        lines.push(`- ${modelId}${marker}`);
+                    }
+                }
+                lines.push('');
+            }
+
+            lines.push('---');
+            lines.push('### 路由规则');
+            lines.push('- 前端/UI → 中档');
+            lines.push('- 后端/API → 高档');
+            lines.push('- 测试 → 低档');
+            lines.push('- 文档 → 中档');
+            lines.push('- 配置/部署 → 低档');
+            lines.push('');
+            lines.push('若推荐档位无模型，自动 fallback 到更高档。');
+
+            return ok(lines.join('\n'));
         },
     });
 }
