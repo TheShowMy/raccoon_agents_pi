@@ -110,14 +110,14 @@ function formatCommandError(label: string, result: CommandResult): string {
 async function initializeGitRepository(pi: ExtensionAPI, ctx: ExtensionContext): Promise<boolean> {
     const confirmed = await ctx.ui.confirm(
         '初始化 Git 仓库？',
-        `当前目录不是 Git 项目：${formatCwd(ctx.cwd)}\n是否执行 git init 后进入聊天？`,
+        `当前目录还不是 Git 项目：${formatCwd(ctx.cwd)}\n是否执行 git init 后进入对话？`,
     );
     if (!confirmed) {
         ctx.ui.setWidget('raccoon-git-required', [
             ctx.ui.theme.fg('warning', '当前目录不是 Git 项目'),
             '已取消初始化，浣熊特工队将退出。',
         ]);
-        ctx.ui.notify('已取消 Git 初始化。', 'warning');
+        ctx.ui.notify('已取消 Git 初始化', 'warning');
         setTimeout(() => ctx.shutdown(), 250);
         return false;
     }
@@ -128,7 +128,7 @@ async function initializeGitRepository(pi: ExtensionAPI, ctx: ExtensionContext):
     });
     if (result.code === 0) {
         ctx.ui.setWidget('raccoon-git-required', undefined);
-        ctx.ui.notify('Git 仓库初始化完成。', 'info');
+        ctx.ui.notify('Git 仓库初始化完成', 'info');
         return true;
     }
 
@@ -136,7 +136,7 @@ async function initializeGitRepository(pi: ExtensionAPI, ctx: ExtensionContext):
         ctx.ui.theme.fg('error', 'Git 初始化失败'),
         ...formatCommandError('git init', result).split(/\r?\n/).slice(0, 8),
     ]);
-    ctx.ui.notify('Git 初始化失败，已退出。', 'error');
+    ctx.ui.notify('Git 初始化失败，已退出', 'error');
     setTimeout(() => ctx.shutdown(), 250);
     return false;
 }
@@ -144,37 +144,37 @@ async function initializeGitRepository(pi: ExtensionAPI, ctx: ExtensionContext):
 
 function renderGitSummary(theme: Theme, status: GitStatus): string {
     if (status.kind === 'loading') {
-        return `${theme.fg('accent', 'Git')} ${theme.fg('muted', 'loading...')}`;
+        return `${theme.fg('accent', 'Git')} ${theme.fg('muted', '加载中...')}`;
     }
     if (status.kind === 'not-git') {
-        return `${theme.fg('warning', 'Git')} ${theme.fg('muted', 'No git repository')}`;
+        return `${theme.fg('warning', 'Git')} ${theme.fg('muted', '未初始化仓库')}`;
     }
     if (status.kind === 'error') {
-        return `${theme.fg('error', 'Git error')} ${theme.fg('muted', status.error || 'unknown error')}`;
+        return `${theme.fg('error', 'Git 错误')} ${theme.fg('muted', status.error || '未知错误')}`;
     }
 
     const dirty = !isGitStatusClean(status);
     const branch = theme.bold(status.branch);
-    const state = dirty ? theme.fg('warning', 'dirty') : theme.fg('success', 'clean');
+    const state = dirty ? theme.fg('warning', '有变更') : theme.fg('success', '干净');
     const syncParts: string[] = [];
-    if (status.upstream) syncParts.push(theme.fg('muted', `upstream ${status.upstream}`));
-    if (status.ahead > 0) syncParts.push(theme.fg('accent', `ahead ${status.ahead}`));
-    if (status.behind > 0) syncParts.push(theme.fg('warning', `behind ${status.behind}`));
+    if (status.upstream) syncParts.push(theme.fg('muted', `上游 ${status.upstream}`));
+    if (status.ahead > 0) syncParts.push(theme.fg('accent', `领先 ${status.ahead}`));
+    if (status.behind > 0) syncParts.push(theme.fg('warning', `落后 ${status.behind}`));
 
     return [`${theme.fg('accent', 'Git')} ${branch}`, state, ...syncParts].join('  ');
 }
 
 function renderGitCounters(theme: Theme, status: GitStatus): string {
     if (status.kind !== 'ready') {
-        return theme.fg('muted', 'staged 0  unstaged 0  untracked 0  conflicts 0');
+        return theme.fg('muted', '暂存 0  未暂存 0  未跟踪 0  冲突 0');
     }
 
     const color = status.conflicts > 0 ? 'error' : isGitStatusClean(status) ? 'success' : 'warning';
     return [
-        theme.fg(color, `staged ${status.staged}`),
-        theme.fg(color, `unstaged ${status.unstaged}`),
-        theme.fg(color, `untracked ${status.untracked}`),
-        theme.fg(status.conflicts > 0 ? 'error' : 'muted', `conflicts ${status.conflicts}`),
+        theme.fg(color, `暂存 ${status.staged}`),
+        theme.fg(color, `未暂存 ${status.unstaged}`),
+        theme.fg(color, `未跟踪 ${status.untracked}`),
+        theme.fg(status.conflicts > 0 ? 'error' : 'muted', `冲突 ${status.conflicts}`),
     ].join('  ');
 }
 
@@ -325,7 +325,7 @@ export default function raccoonAgents(pi: ExtensionAPI) {
                 ctx.ui.theme.fg('error', 'Git 检查失败'),
                 ...message.split(/\r?\n/).slice(0, 8),
             ]);
-            ctx.ui.notify('Git 检查失败，已退出。', 'error');
+            ctx.ui.notify('Git 检查失败，已退出', 'error');
             setTimeout(() => ctx.shutdown(), 250);
             guardStarted = false;
         }

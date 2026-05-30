@@ -35,7 +35,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_feature_new',
-        label: 'Feature New',
+        label: '新建功能分支',
         description: '基于 main 创建 feature 分支。自动添加 feat/ 前缀。',
         parameters: Type.Object({
             name: Type.String({ description: '功能短名（自动加 feat/ 前缀）' }),
@@ -78,7 +78,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_git_commit',
-        label: 'Git Commit',
+        label: 'Git 提交',
         description: '暂存变更并提交。支持 conventional commits 格式。',
         parameters: Type.Object({
             message: Type.String({ description: '提交消息（feat:/fix:/refactor:/docs:/chore:）' }),
@@ -123,7 +123,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_git_push',
-        label: 'Git Push',
+        label: 'Git 推送',
         description: '推送当前分支到 origin。自动设置 upstream 跟踪。',
         parameters: Type.Object({}),
         async execute(_toolCallId, _params, _signal, _onUpdate, ctx) {
@@ -167,7 +167,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_pr_create',
-        label: 'PR Create',
+        label: '创建 PR/MR',
         description: '创建 Pull Request / Merge Request。支持 GitHub (gh)、GitLab (glab)。',
         parameters: Type.Object({
             title: Type.String({ description: 'PR/MR 标题' }),
@@ -265,7 +265,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_pr_review',
-        label: 'PR Review',
+        label: '审核 PR/MR',
         description:
             '获取当前分支对应 PR/MR 的详情（标题、描述、Diff、CI 状态），供 Agent 审核代码。支持 GitHub、GitLab。',
         parameters: Type.Object({}),
@@ -469,7 +469,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_run_test',
-        label: 'Run Test',
+        label: '运行测试',
         description:
             '运行项目测试脚本。自动检测 package.json 中的测试命令，也可手动指定脚本名。',
         parameters: Type.Object({
@@ -550,7 +550,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_pr_merge',
-        label: 'PR Merge',
+        label: '合并 PR/MR',
         description:
             '合并当前分支对应的 PR/MR。要求 CI 全部通过且无冲突，支持 merge/squash/rebase。支持 GitHub、GitLab。',
         parameters: Type.Object({
@@ -806,7 +806,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_issue_create',
-        label: 'Issue Create',
+        label: '创建 Issue',
         description: '创建 Git Issue。支持 GitHub (gh)、GitLab (glab)。',
         parameters: Type.Object({
             title: Type.String({ description: 'Issue 标题' }),
@@ -892,7 +892,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_issue_list',
-        label: 'Issue List',
+        label: 'Issue 列表',
         description: '列出最近的开放 Issue。支持 GitHub (gh)、GitLab (glab)。',
         parameters: Type.Object({
             limit: Type.Optional(
@@ -1017,7 +1017,7 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
 
     pi.registerTool({
         name: 'raccoon_issue_breakdown',
-        label: 'Issue Breakdown',
+        label: 'Issue 拆分',
         description:
             '读取 Issue 详情并提供任务拆分框架，帮助 Agent 将需求拆分为可执行的子任务。支持 GitHub、GitLab。',
         parameters: Type.Object({
