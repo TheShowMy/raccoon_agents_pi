@@ -1,6 +1,7 @@
 import { Type } from 'typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { isGitWorkTree, detectGitHost, gitExec } from '../git-utils.js';
+import { getWorkflowState } from '../workflow-ui.js';
 import { ok, fail, currentBranch } from './common.js';
 
 export function registerPrMergeTool(pi: ExtensionAPI): void {
@@ -16,13 +17,33 @@ export function registerPrMergeTool(pi: ExtensionAPI): void {
                     { description: '合并方式，默认 squash' },
                 ),
             ),
+            skipReview: Type.Optional(
+                Type.Boolean({
+                    description: '是否跳过代码审核（极小改动时可用，默认 false）',
+                    default: false,
+                }),
+            ),
         }),
         async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
             const cwd = ctx.cwd;
             const method = params.method ?? 'squash';
+            const skipReview = params.skipReview ?? false;
 
             if (!(await isGitWorkTree(pi, cwd))) {
                 return fail('当前目录不是 Git 仓库。');
+            }
+
+            // 审核强制检查：未审核且未明确跳过，则拒绝合并
+            if (!skipReview) {
+                const state = getWorkflowState();
+                if (!state.completedSteps.has('review')) {
+                    return fail(
+                        '❌ 禁止跳审！\n\n' +
+                        '合并前必须先调用 `raccoon_pr_review` 审核代码。\n' +
+                        '如果本次改动极小（<50 行纯文档/配置），' +
+                        '可在调用 `raccoon_pr_merge` 时设置 `skipReview: true` 明确跳过。',
+                    );
+                }
             }
 
             const branch = await currentBranch(pi, cwd);
