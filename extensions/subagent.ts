@@ -71,8 +71,8 @@ export function loadAgentFromFile(filePath: string): AgentConfig | null {
 }
 
 /**
- * 解析 YAML frontmatter，支持标准 YAML 格式
- * 包括多行值、数组、嵌套对象等
+ * 解析 YAML frontmatter，支持多行缩进值
+ * 注：不支持 YAML 数组语法（- item）和嵌套对象
  */
 function parseFrontmatter(content: string): { frontmatter: Record<string, string>; body: string } {
     const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
@@ -92,7 +92,7 @@ function parseFrontmatter(content: string): { frontmatter: Record<string, string
     };
 
     for (const line of lines) {
-        const keyMatch = line.match(/^(\w+):\s*(.*)$/);
+        const keyMatch = line.match(/^([a-zA-Z0-9_-]+):\s*(.*)$/);
         if (keyMatch) {
             flush();
             currentKey = keyMatch[1];
@@ -201,6 +201,7 @@ async function runSingleAgent(
 
         result.exitCode = exitCode;
         result.timedOut = timedOut;
+        result.stderr += stderr;
     } finally {
         if (tmpPromptPath) {
             try { unlinkSync(tmpPromptPath); } catch { /* ignore */ }
@@ -234,15 +235,15 @@ function spawnWithTimeout(
             stdio: ["ignore", "pipe", "pipe"],
         });
 
-        const killProc = () => {
-            timedOut = true;
+        const killProc = (isTimeout = false) => {
+            if (isTimeout) timedOut = true;
             proc.kill("SIGTERM");
             setTimeout(() => {
                 if (!proc.killed) proc.kill("SIGKILL");
             }, 5000);
         };
 
-        const timeoutTimer = setTimeout(killProc, options.timeout);
+        const timeoutTimer = setTimeout(() => killProc(true), options.timeout);
 
         proc.stdout.on("data", (data) => {
             stdout += data.toString();
@@ -273,7 +274,7 @@ function spawnWithTimeout(
         if (options.signal) {
             const onAbort = () => {
                 clearTimeout(timeoutTimer);
-                killProc();
+                killProc(false);
             };
             if (options.signal.aborted) onAbort();
             else options.signal.addEventListener("abort", onAbort, { once: true });
