@@ -1,254 +1,137 @@
 import type { ExtensionAPI, ExtensionContext } from '@earendil-works/pi-coding-agent';
 
 /**
- * Raccoon Agents — /newiss 需求收集与 Issue 创建向导
+ * Raccoon Agents — /newiss 需求收集与 Issue 创建向导（LLM 协作版）
  *
- * 设计原则：
- * 1. LLM 参与：通过 before_agent_start 注入需求上下文，让 LLM 自然参与追问
- * 2. 灵活交互：每个追问都提供预设选项 + 自由输入，不强制选择
- * 3. 通用维度：不硬编码场景（如登录/支付），而是基于通用的需求维度收集
+ * 核心设计：
+ * 1. LLM 分析用户需求，动态决定需要澄清什么
+ * 2. LLM 输出 [CLARIFY] 标记块，包含追问问题和选项
+ * 3. 扩展拦截标记块，用 TUI 选择器展示选项
+ * 4. 用户选择后，答案发回 LLM 继续分析
+ * 5. 直到 LLM 输出 [FINALIZE] 标记块，生成 Issue
  */
 
 // ─── 状态管理 ───────────────────────────────────────────────────────────────
 
-interface RequirementDraft {
-    feature: string;
-    who: string;
-    what: string;
-    why: string;
-    acceptance: string[];
-    constraints: string[];
-    notes: string[];
+interface Clarification {
+    question: string;
+    answer: string;
 }
 
-let activeDraft: RequirementDraft | null = null;
-let newissPhase: 'idle' | 'collecting' | 'confirming' = 'idle';
+interface IssueDraft {
+    feature: string;
+    clarifications: Clarification[];
+}
+
+interface FinalIssue {
+    title: string;
+    body: string;
+}
+
+interface NewissState {
+    phase: 'idle' | 'collecting' | 'confirming';
+    draft: IssueDraft | null;
+    finalIssue: FinalIssue | null;
+}
+
+const state: NewissState = {
+    phase: 'idle',
+    draft: null,
+    finalIssue: null,
+};
 
 function resetState() {
-    activeDraft = null;
-    newissPhase = 'idle';
+    state.phase = 'idle';
+    state.draft = null;
+    state.finalIssue = null;
 }
 
-function startDraft(feature: string): RequirementDraft {
-    const draft: RequirementDraft = {
+function startCollecting(feature: string) {
+    state.phase = 'collecting';
+    state.draft = {
         feature,
-        who: '',
-        what: '',
-        why: '',
-        acceptance: [],
-        constraints: [],
-        notes: [],
+        clarifications: [],
     };
-    activeDraft = draft;
-    newissPhase = 'collecting';
-    return draft;
 }
 
-// ─── Issue 生成 ─────────────────────────────────────────────────────────────
+// ─── 工具函数 ───────────────────────────────────────────────────────────────
 
-function buildIssueBody(draft: RequirementDraft): string {
-    const lines: string[] = [];
-
-    lines.push('## 功能概述');
-    lines.push(draft.feature);
-    lines.push('');
-
-    if (draft.who || draft.what || draft.why) {
-        lines.push('## 需求背景');
-        if (draft.who) lines.push(`- **为谁做**：${draft.who}`);
-        if (draft.what) lines.push(`- **做什么**：${draft.what}`);
-        if (draft.why) lines.push(`- **为什么做**：${draft.why}`);
-        lines.push('');
-    }
-
-    if (draft.acceptance.length > 0) {
-        lines.push('## 验收标准');
-        draft.acceptance.forEach((item) => {
-            lines.push(`- [ ] ${item}`);
-        });
-        lines.push('');
-    }
-
-    if (draft.constraints.length > 0) {
-        lines.push('## 约束与边界');
-        draft.constraints.forEach((c) => lines.push(`- ${c}`));
-        lines.push('');
-    }
-
-    if (draft.notes.length > 0) {
-        lines.push('## 补充说明');
-        draft.notes.forEach((n) => lines.push(`- ${n}`));
-        lines.push('');
-    }
-
-    lines.push('---');
-    lines.push('*由 Raccoon Agents（浣熊特工队）协助创建* 🦝');
-
-    return lines.join('\n');
+function extractTextFromMessage(message: any): string {
+    if (!message.content || !Array.isArray(message.content)) return '';
+    return message.content
+        .filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text)
+        .join('');
 }
 
-function buildIssueTitle(draft: RequirementDraft): string {
-    const prefix = draft.feature.length > 40 ? draft.feature.slice(0, 37) + '...' : draft.feature;
-    return `feat: ${prefix}`;
+interface ClarifyData {
+    question: string;
+    options: string[];
+    allowCustom: boolean;
 }
 
-function formatSummary(draft: RequirementDraft): string[] {
-    const lines: string[] = [''];
-    lines.push('┌──────────────────────────────────────────────────────────┐');
-    lines.push('│  📋 需求草稿                                              │');
-    lines.push('├──────────────────────────────────────────────────────────┤');
-
-    const feature = draft.feature.length > 46 ? draft.feature.slice(0, 43) + '...' : draft.feature;
-    lines.push(`│  功能：${feature.padEnd(46)}│`);
-
-    if (draft.who) {
-        const text = draft.who.length > 46 ? draft.who.slice(0, 43) + '...' : draft.who;
-        lines.push(`│  对象：${text.padEnd(46)}│`);
-    }
-    if (draft.why) {
-        const text = draft.why.length > 46 ? draft.why.slice(0, 43) + '...' : draft.why;
-        lines.push(`│  价值：${text.padEnd(46)}│`);
-    }
-    if (draft.acceptance.length > 0) {
-        lines.push(`│  验收：${draft.acceptance[0].padEnd(46)}│`);
-        draft.acceptance.slice(1).forEach((a) => {
-            const text = a.length > 46 ? a.slice(0, 43) + '...' : a;
-            lines.push(`│        ${text.padEnd(46)}│`);
-        });
-    }
-    if (draft.constraints.length > 0) {
-        lines.push(`│  约束：${draft.constraints[0].padEnd(46)}│`);
-    }
-
-    lines.push('└──────────────────────────────────────────────────────────┘');
-    lines.push('');
-    return lines;
+interface FinalizeData {
+    title: string;
+    body: string;
 }
 
-// ─── TUI 交互 ───────────────────────────────────────────────────────────────
+function extractClarify(text: string): ClarifyData | null {
+    const match = text.match(/\[CLARIFY\]\s*\n?([\s\S]*?)\n?\[\/CLARIFY\]/);
+    if (!match) return null;
+    try {
+        const data = JSON.parse(match[1].trim());
+        return {
+            question: data.question || '',
+            options: Array.isArray(data.options) ? data.options : [],
+            allowCustom: data.allowCustom !== false,
+        };
+    } catch {
+        return null;
+    }
+}
 
-async function askOptionOrInput(
+function extractFinalize(text: string): FinalizeData | null {
+    const match = text.match(/\[FINALIZE\]\s*\n?([\s\S]*?)\n?\[\/FINALIZE\]/);
+    if (!match) return null;
+    try {
+        const data = JSON.parse(match[1].trim());
+        return {
+            title: data.title || '',
+            body: data.body || '',
+        };
+    } catch {
+        return null;
+    }
+}
+
+// ─── Issue 创建 ─────────────────────────────────────────────────────────────
+
+async function createGitIssue(
+    pi: ExtensionAPI,
     ctx: ExtensionContext,
-    question: string,
-    options: string[],
-): Promise<string | null> {
-    const items = [...options, '📝 自由描述...'];
-    const choice = await ctx.ui.select(question, items);
-    if (choice === undefined || choice === null) return null;
-
-    const idx = typeof choice === 'string' ? parseInt(choice, 10) : choice;
-    if (isNaN(idx)) return null;
-
-    // 最后一项是自由输入
-    if (idx === items.length - 1) {
-        const custom = await ctx.ui.input('请描述：');
-        return custom ?? null;
-    }
-
-    return options[idx] ?? null;
-}
-
-async function askMultipleWithCustom(
-    ctx: ExtensionContext,
-    question: string,
-    options: string[],
-): Promise<string[] | null> {
-    const result: string[] = [];
-    const remaining = [...options];
-
-    while (remaining.length > 0) {
-        const items = [...remaining, '📝 自由添加...', '✅ 完成'];
-        const choice = await ctx.ui.select(`${question}（已选 ${result.length} 项）`, items);
-
-        if (choice === undefined || choice === null) return null;
-        const idx = typeof choice === 'string' ? parseInt(choice, 10) : choice;
-        if (isNaN(idx)) return null;
-
-        if (idx === items.length - 1) break; // 完成
-        if (idx === items.length - 2) {
-            // 自由添加
-            const custom = await ctx.ui.input('请描述验收标准：');
-            if (custom) result.push(custom);
-            continue;
+    title: string,
+    body: string,
+): Promise<void> {
+    ctx.ui.setStatus('newiss', '正在创建 Issue...');
+    try {
+        const result = await pi.exec('gh', ['issue', 'create', '--title', title, '--body', body], {
+            cwd: ctx.cwd,
+            timeout: 15_000,
+        });
+        if (result.code === 0) {
+            const url = result.stdout.trim();
+            ctx.ui.notify(`✅ Issue 已创建！${url}`, 'info');
+            ctx.ui.setWidget('newiss-result', ['', '🎉 Issue 创建成功！', url, '']);
+        } else {
+            ctx.ui.notify(`创建失败：${result.stderr.slice(0, 200)}`, 'error');
         }
-
-        result.push(remaining[idx]);
-        remaining.splice(idx, 1);
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        ctx.ui.notify(`创建异常：${msg}`, 'error');
+    } finally {
+        ctx.ui.setStatus('newiss', undefined);
+        resetState();
     }
-
-    return result;
-}
-
-// ─── 需求收集流程 ───────────────────────────────────────────────────────────
-
-async function collectRequirements(ctx: ExtensionContext): Promise<boolean> {
-    const draft = activeDraft;
-    if (!draft) return false;
-
-    // 1. 为谁做？
-    if (!draft.who) {
-        const answer = await askOptionOrInput(ctx, '这个功能主要给谁用？', [
-            '终端用户（C端）',
-            '管理员/运营（B端）',
-            '开发者/内部',
-        ]);
-        if (answer === null) return false;
-        draft.who = answer;
-    }
-
-    // 2. 解决什么问题？
-    if (!draft.why) {
-        const answer = await askOptionOrInput(ctx, '为什么要做这个？解决了什么痛点？', [
-            '用户反馈的高频需求',
-            '现有功能的体验优化',
-            '技术债务/架构改进',
-            '新业务场景需要',
-        ]);
-        if (answer === null) return false;
-        draft.why = answer;
-    }
-
-    // 3. 验收标准
-    if (draft.acceptance.length === 0) {
-        const answers = await askMultipleWithCustom(ctx, '怎么算做好了？', [
-            '功能可正常使用，核心流程跑通',
-            '异常场景有处理，用户有反馈',
-            '已编写并运行测试用例',
-            '代码通过 Code Review',
-            '已更新相关文档',
-        ]);
-        if (answers === null) return false;
-        draft.acceptance = answers;
-    }
-
-    // 4. 约束条件（可选）
-    const hasConstraints = await ctx.ui.confirm(
-        '有没有技术或业务约束？',
-        '比如兼容特定浏览器、性能要求、依赖第三方服务等',
-    );
-    if (hasConstraints) {
-        const answers = await askMultipleWithCustom(ctx, '有哪些约束？', [
-            '兼容主流浏览器（Chrome/Safari/Firefox）',
-            '移动端优先适配',
-            '响应时间 < 200ms',
-            '不能破坏现有 API 兼容性',
-        ]);
-        if (answers !== null) {
-            draft.constraints = answers;
-        }
-    }
-
-    // 5. 补充说明（可选）
-    const hasNotes = await ctx.ui.confirm(
-        '还有需要补充的吗？',
-        '任何设计参考、竞品对标、优先级说明等',
-    );
-    if (hasNotes) {
-        const note = await ctx.ui.input('请补充（直接回车结束）：');
-        if (note) draft.notes.push(note);
-    }
-
-    return true;
 }
 
 // ─── 主注册 ─────────────────────────────────────────────────────────────────
@@ -263,156 +146,236 @@ export function registerNewiss(pi: ExtensionAPI) {
                 return;
             }
 
-            // 如果正在收集中，展示当前状态
-            if (newissPhase === 'collecting' && activeDraft) {
-                const summary = formatSummary(activeDraft);
-                ctx.ui.setWidget('newiss-summary', summary);
-                ctx.ui.notify('当前有进行中的需求收集，继续完善或创建 Issue', 'info');
+            if (state.phase === 'collecting') {
+                ctx.ui.notify('已有进行中的需求收集，请继续完成或按 Esc 取消', 'warning');
                 return;
             }
 
-            // 第一步：收集功能描述
             const feature = await ctx.ui.input('🦝 想做什么？一句话描述：');
             if (!feature) {
                 ctx.ui.notify('已取消', 'warning');
                 return;
             }
 
-            startDraft(feature.trim());
+            startCollecting(feature.trim());
+            ctx.ui.notify('已进入需求收集模式，浣熊正在分析你的需求...', 'info');
 
-            // 进入多轮收集
-            const ok = await collectRequirements(ctx);
-            if (!ok) {
-                resetState();
-                ctx.ui.setWidget('newiss-summary', undefined);
-                ctx.ui.notify('已取消需求收集', 'warning');
-                return;
+            // 触发 LLM 分析需求
+            pi.sendUserMessage(feature.trim());
+        },
+    });
+
+    // 注入系统提示，引导 LLM 行为
+    pi.on('before_agent_start', async (event, _ctx) => {
+        if (state.phase !== 'collecting' || !state.draft) return;
+
+        const draft = state.draft;
+        const collected =
+            draft.clarifications.length > 0
+                ? draft.clarifications.map((c) => `  - ${c.question}：${c.answer}`).join('\n')
+                : '  （暂无）';
+
+        const prompt = `
+【系统指令】你正在协助用户使用 /newiss 功能收集需求并创建 GitHub Issue。
+
+【输出规则 — 严格遵守】
+1. 每次回复必须且只能包含一个标记块
+2. 不要输出任何解释性文字、分析、问候语或 Markdown
+3. 只输出纯标记块，不要带代码围栏
+
+【标记格式】
+
+需要追问时：
+[CLARIFY]
+{"question":"追问问题","options":["选项1","选项2","选项3"],"allowCustom":true}
+[/CLARIFY]
+
+信息足够时：
+[FINALIZE]
+{"title":"feat: 简短标题","body":"## 功能描述\\n...\\n\\n## 验收标准\\n- [ ] ..."}
+[/FINALIZE]
+
+【已收集的需求信息】
+功能概述：${draft.feature}
+已澄清：
+${collected}
+
+【你的任务】
+分析当前信息是否足够创建清晰的 Issue。如果缺少关键信息（如具体场景、验收标准、技术约束），输出 CLARIFY 追问。如果信息足够，输出 FINALIZE 生成 Issue。
+`.trim();
+
+        return {
+            systemPrompt: event.systemPrompt + '\n\n' + prompt,
+        };
+    });
+
+    // 拦截 LLM 回复，解析标记块
+    pi.on('message_end', async (event, ctx) => {
+        if (event.message.role !== 'assistant') return;
+        if (state.phase !== 'collecting' || !state.draft) return;
+
+        const text = extractTextFromMessage(event.message);
+
+        // ─── 处理 CLARIFY ───
+        const clarify = extractClarify(text);
+        if (clarify) {
+            const options = [...clarify.options];
+            if (clarify.allowCustom !== false) {
+                options.push('📝 自由描述...');
             }
 
-            // 展示摘要
-            newissPhase = 'confirming';
-            const summary = formatSummary(activeDraft!);
-            ctx.ui.setWidget('newiss-summary', summary);
+            const choice = await ctx.ui.select(clarify.question, options);
 
-            // 最终确认
-            const action = await ctx.ui.select('需求已整理完毕，请选择：', [
-                '✅ 直接创建 Issue',
-                '📝 补充更多信息',
+            if (choice === undefined || choice === null) {
+                resetState();
+                ctx.ui.setWidget('newiss-summary', undefined);
+                return {
+                    message: {
+                        ...event.message,
+                        content: [{ type: 'text', text: '❌ 已取消需求收集' }],
+                    },
+                };
+            }
+
+            const idx = typeof choice === 'string' ? parseInt(choice, 10) : choice;
+            if (isNaN(idx)) {
+                resetState();
+                return {
+                    message: {
+                        ...event.message,
+                        content: [{ type: 'text', text: '❌ 已取消需求收集' }],
+                    },
+                };
+            }
+
+            let answer: string;
+            const isCustomOption = clarify.allowCustom !== false && idx === options.length - 1;
+            if (isCustomOption) {
+                const custom = await ctx.ui.input('请描述：');
+                answer = custom || '未指定';
+            } else {
+                answer = clarify.options[idx] || '未指定';
+            }
+
+            // 记录答案
+            state.draft.clarifications.push({
+                question: clarify.question,
+                answer,
+            });
+
+            // 发送答案触发下一轮 LLM 分析
+            pi.sendUserMessage(answer);
+
+            // 替换原始消息为简化提示
+            return {
+                message: {
+                    ...event.message,
+                    content: [{ type: 'text', text: `🦝 ${clarify.question}` }],
+                },
+            };
+        }
+
+        // ─── 处理 FINALIZE ───
+        const finalize = extractFinalize(text);
+        if (finalize) {
+            state.phase = 'confirming';
+            state.finalIssue = finalize;
+
+            // 展示确认面板
+            const summaryLines = [
+                '',
+                '┌──────────────────────────────────────────────────────────┐',
+                '│  📋 Issue 预览                                           │',
+                '├──────────────────────────────────────────────────────────┤',
+                `│  标题：${finalize.title.slice(0, 46).padEnd(46)}│`,
+                '│                                                          │',
+                '│  正文预览：                                              │',
+            ];
+
+            const bodyLines = finalize.body.split('\n');
+            const previewLines = bodyLines.slice(0, 6);
+            previewLines.forEach((line) => {
+                const truncated = line.slice(0, 50);
+                summaryLines.push(`│  ${truncated.padEnd(54)}│`);
+            });
+            if (bodyLines.length > 6) {
+                summaryLines.push(`│  ...${' '.repeat(51)}│`);
+            }
+
+            summaryLines.push('└──────────────────────────────────────────────────────────┘');
+            summaryLines.push('');
+
+            ctx.ui.setWidget('newiss-summary', summaryLines);
+
+            const action = await ctx.ui.select('确认创建 Issue？', [
+                '✅ 直接创建',
+                '📝 再补充点信息',
                 '❌ 取消',
             ]);
 
             if (action === undefined || action === null) {
                 resetState();
                 ctx.ui.setWidget('newiss-summary', undefined);
-                ctx.ui.notify('已取消', 'warning');
-                return;
+                return {
+                    message: {
+                        ...event.message,
+                        content: [{ type: 'text', text: '❌ 已取消' }],
+                    },
+                };
             }
 
             const idx = typeof action === 'string' ? parseInt(action, 10) : action;
             if (isNaN(idx)) {
                 resetState();
                 ctx.ui.setWidget('newiss-summary', undefined);
-                ctx.ui.notify('已取消', 'warning');
-                return;
+                return {
+                    message: {
+                        ...event.message,
+                        content: [{ type: 'text', text: '❌ 已取消' }],
+                    },
+                };
             }
 
             if (idx === 2) {
                 // 取消
                 resetState();
                 ctx.ui.setWidget('newiss-summary', undefined);
-                ctx.ui.notify('已取消', 'warning');
-                return;
+                return {
+                    message: {
+                        ...event.message,
+                        content: [{ type: 'text', text: '❌ 已取消' }],
+                    },
+                };
             }
 
             if (idx === 1) {
-                // 补充信息 — 让用户自由与 LLM 讨论
-                ctx.ui.notify('请直接描述你想补充的内容，浣熊会帮你整合', 'info');
-                // 保持状态，用户可以继续对话
-                return;
+                // 补充信息：回到收集模式
+                state.phase = 'collecting';
+                ctx.ui.notify('请继续描述你想补充的内容', 'info');
+                return {
+                    message: {
+                        ...event.message,
+                        content: [{ type: 'text', text: '📝 请补充更多信息' }],
+                    },
+                };
             }
 
             // 创建 Issue
-            await createIssue(pi, ctx);
-        },
-    });
+            await createGitIssue(pi, ctx, finalize.title, finalize.body);
 
-    // 监听 before_agent_start，注入需求上下文让 LLM 参与
-    pi.on('before_agent_start', async (event, ctx) => {
-        if (newissPhase !== 'collecting' && newissPhase !== 'confirming') return;
-        if (!activeDraft) return;
-
-        const draft = activeDraft;
-        const contextLines: string[] = [];
-        contextLines.push('【当前正在使用 /newiss 收集需求，请基于以下信息协助用户完善】');
-        contextLines.push(`功能概述：${draft.feature}`);
-        if (draft.who) contextLines.push(`目标用户：${draft.who}`);
-        if (draft.why) contextLines.push(`需求价值：${draft.why}`);
-        if (draft.acceptance.length > 0) {
-            contextLines.push(`验收标准：${draft.acceptance.join('；')}`);
-        }
-        if (draft.constraints.length > 0) {
-            contextLines.push(`约束条件：${draft.constraints.join('；')}`);
-        }
-        contextLines.push('');
-        contextLines.push(
-            "提示：如果用户补充了新信息，请帮助梳理并整合到需求中。用户可以说'好了'来结束收集。",
-        );
-
-        return {
-            systemPrompt: event.systemPrompt + '\n\n' + contextLines.join('\n'),
-        };
-    });
-
-    // 监听 input，检测用户是否说"好了"来触发 Issue 创建
-    pi.on('input', async (event, ctx) => {
-        if (newissPhase !== 'confirming' || !activeDraft) return;
-
-        const text = event.text.trim().toLowerCase();
-        if (text === '好了' || text === '创建' || text === '创建issue' || text === '/newiss') {
-            // 用户确认创建
-            await createIssue(pi, ctx);
-            return { action: 'handled' };
+            return {
+                message: {
+                    ...event.message,
+                    content: [{ type: 'text', text: '✅ Issue 创建完成！' }],
+                },
+            };
         }
 
-        // 其他输入让 LLM 正常处理，before_agent_start 会注入上下文
-        return { action: 'continue' };
+        // 没有检测到标记块，正常显示原始消息
     });
 
     // session 结束时清理状态
     pi.on('session_shutdown', () => {
         resetState();
     });
-}
-
-// ─── Issue 创建 ─────────────────────────────────────────────────────────────
-
-async function createIssue(pi: ExtensionAPI, ctx: ExtensionContext) {
-    if (!activeDraft) return;
-
-    ctx.ui.setStatus('newiss', '正在创建 Issue...');
-
-    try {
-        const draft = activeDraft;
-        const title = buildIssueTitle(draft);
-        const body = buildIssueBody(draft);
-
-        const result = await pi.exec('gh', ['issue', 'create', '--title', title, '--body', body], {
-            cwd: ctx.cwd,
-            timeout: 15_000,
-        });
-
-        if (result.code === 0) {
-            const url = result.stdout.trim();
-            ctx.ui.notify(`✅ Issue 已创建！${url}`, 'info');
-            ctx.ui.setWidget('newiss-summary', ['', '🎉 Issue 创建成功！', `${url}`, '']);
-        } else {
-            ctx.ui.notify(`创建失败：${result.stderr.slice(0, 200)}`, 'error');
-        }
-    } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        ctx.ui.notify(`创建异常：${msg}`, 'error');
-    } finally {
-        ctx.ui.setStatus('newiss', undefined);
-        resetState();
-    }
 }
