@@ -4,12 +4,13 @@
  * 支持：
  * 1. 按任务类型路由到 high/medium/low 档位模型
  * 2. 低档执行失败时自动 fallback 到更高档
- * 3. 任务拆分：大 diff 自动分片，避免单个子 agent 过载
+ * 3. 文件上下文自动校验，防止目录遍历
  */
 
+import { resolve, normalize, sep } from 'node:path';
 import { Type } from 'typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { runSingleAgent, type AgentConfig } from '../subagent.js';
+import { runSingleAgent, type AgentConfig, type SingleResult } from '../subagent.js';
 import { loadTierConfig, routeModel, TIER_ORDER, TASK_TIER_MAP } from '../model-tier.js';
 import { ok, fail } from './common.js';
 
@@ -52,6 +53,138 @@ const FALLBACK_PROMPT = `
 ⚠️ 注意：由于之前使用低档模型执行此任务失败，现在由更高档模型重试。
 请确保输出质量，完成任务目标。`;
 
+// ── 路径安全 ──────────────────────────────────────────────
+
+/**
+ * 校验并规范化文件路径
+ * - 禁止包含 ".." 的目录遍历
+ * - 限制为相对路径（不能是绝对路径）
+ * - 返回规范化后的路径或 null（非法路径）
+ */
+export function sanitizeContextFile(raw: string): string | null {
+    if (!raw || typeof raw !== 'string') return null;
+
+    // 禁止绝对路径
+    if (raw.startsWith('/')) return null;
+
+    // 禁止 Windows 盘符路径
+    if (/^[a-zA-Z]:[/\\]/.test(raw)) return null;
+
+    // 禁止包含 ".." 的任何形式
+    const normalized = normalize(raw);
+    if (normalized.split(sep).includes('..')) return null;
+
+    // 去除开头的 ./
+    return normalized.replace(/^\.\//, '');
+}
+
+/**
+ * 校验并过滤 contextFiles，只允许项目内相对路径
+ */
+export function sanitizeContextFiles(files: string[]): string[] {
+    return files.map(sanitizeContextFile).filter((f): f is string => f !== null);
+}
+
+// ── 构建任务上下文 ──────────────────────────────────────────────
+
+/**
+ * 将文件路径列表追加到任务描述中，供子 agent 读取
+ */
+export function buildTaskWithContext(task: string, contextFiles: string[]): string {
+    if (contextFiles.length === 0) return task;
+    return `${task}\n\n请读取以下文件作为上下文：\n${contextFiles.join('\n')}`;
+}
+
+// ── 构建 Agent 配置 ──────────────────────────────────────────────
+
+/**
+ * 根据任务类型、档位、模型构建子 agent 配置
+ */
+export function buildAgentConfig(
+    taskType: string,
+    tier: string,
+    model: string,
+    isRetry: boolean,
+): AgentConfig {
+    return {
+        name: `${taskType}任务执行员`,
+        description: `执行 ${taskType} 类型任务（${tier} 档模型）`,
+        model,
+        systemPrompt:
+            (TASK_PROMPT_MAP[taskType] ?? TASK_PROMPT_MAP.backend) +
+            (isRetry ? FALLBACK_PROMPT : ''),
+    };
+}
+
+// ── 格式化结果 ──────────────────────────────────────────────
+
+/**
+ * 将子 agent 执行结果格式化为工具返回内容
+ */
+export function formatSuccess(lines: string[], result: SingleResult): string {
+    lines.push('');
+    lines.push('✅ 任务执行成功');
+    if (result.stdout.trim()) {
+        lines.push('');
+        lines.push(result.stdout);
+    }
+    if (result.stderr) {
+        lines.push('');
+        lines.push(`📋 日志：${result.stderr}`);
+    }
+    return lines.join('\n');
+}
+
+export function formatFailure(lines: string[], result: SingleResult, tier: string): string {
+    lines.push(`❌ ${tier} 档执行失败：${result.timedOut ? '超时' : `退出码 ${result.exitCode}`}`);
+    if (result.stderr) {
+        lines.push(`   stderr: ${result.stderr.slice(0, 300)}`);
+    }
+    return lines.join('\n');
+}
+
+export function formatAllFailed(): string {
+    return [
+        '',
+        '❌ 所有可用档位均执行失败。',
+        '建议：',
+        '1. 检查模型 API 配置是否正常',
+        '2. 缩小任务范围（减少上下文文件）',
+        '3. 手动使用 `raccoon_model_scan` 和 `raccoon_model_config` 配置模型档位',
+    ].join('\n');
+}
+
+// ── 核心执行逻辑 ──────────────────────────────────────────────
+
+async function tryExecuteAtTier(
+    cwd: string,
+    tier: string,
+    model: string,
+    taskType: string,
+    taskWithContext: string,
+    isRetry: boolean,
+    signal: AbortSignal | undefined,
+    onUpdate: ((update: { content: Array<{ type: 'text'; text: string }>; details: Record<string, never> }) => void) | undefined,
+): Promise<SingleResult> {
+    const agent = buildAgentConfig(taskType, tier, model, isRetry);
+
+    return runSingleAgent(cwd, agent, taskWithContext, {
+        signal,
+        heartbeatMs: 300_000,
+        maxHeartbeats: 2,
+        onUpdate: (agentName: string, chunk: string) => {
+            if (onUpdate) {
+                onUpdate({
+                    content: [{ type: 'text' as const, text: `📝 ${agentName} 输出中...\n${chunk.slice(0, 500)}` }],
+                    details: {},
+                });
+            }
+        },
+    });
+}
+
+// ── 工具注册 ──────────────────────────────────────────────
+
 export function registerTaskRouteTool(pi: ExtensionAPI): void {
     pi.registerTool({
         name: 'raccoon_task_route',
@@ -90,6 +223,10 @@ export function registerTaskRouteTool(pi: ExtensionAPI): void {
             const lines: string[] = [];
             lines.push(`🎯 任务路由：${taskType} → 推荐 ${recommendedTier} 档`);
 
+            // 校验并构建文件上下文
+            const safeFiles = contextFiles ? sanitizeContextFiles(contextFiles) : [];
+            const taskWithContext = buildTaskWithContext(task, safeFiles);
+
             // 3. 尝试执行，失败自动 fallback
             while (currentTierIdx < TIER_ORDER.length) {
                 // 用户取消时立即中断
@@ -118,52 +255,22 @@ export function registerTaskRouteTool(pi: ExtensionAPI): void {
                     });
                 }
 
-                // 构建 agent 配置
-                const agent: AgentConfig = {
-                    name: `${taskType}任务执行员`,
-                    description: `执行 ${taskType} 类型任务（${tier} 档模型）`,
-                    model,
-                    systemPrompt:
-                        (TASK_PROMPT_MAP[taskType] ?? TASK_PROMPT_MAP.backend) +
-                        (isRetry ? FALLBACK_PROMPT : ''),
-                };
-
-                // 构建任务：包含文件上下文
-                let taskWithContext = task;
-                if (contextFiles && contextFiles.length > 0) {
-                    taskWithContext += `\n\n请读取以下文件作为上下文：\n${contextFiles.join('\n')}`;
-                }
-
                 // 执行
-                const result = await runSingleAgent(cwd, agent, taskWithContext, {
+                const result = await tryExecuteAtTier(
+                    cwd,
+                    tier,
+                    model,
+                    taskType,
+                    taskWithContext,
+                    isRetry,
                     signal,
-                    heartbeatMs: 300_000,
-                    maxHeartbeats: 2,
-                    onUpdate: (agentName: string, chunk: string) => {
-                        if (onUpdate) {
-                            onUpdate({
-                                content: [{ type: 'text' as const, text: `📝 ${agentName} 输出中...\n${chunk.slice(0, 500)}` }],
-                                details: {},
-                            });
-                        }
-                    },
-                });
+                    onUpdate,
+                );
 
                 // 4. 检查结果
                 // 注意：不检查 stdout 是否为空，因为子 agent 可能直接修改文件而不输出文本
                 if (result.exitCode === 0 && !result.timedOut) {
-                    // 成功
-                    lines.push('');
-                    lines.push('✅ 任务执行成功');
-                    if (result.stdout.trim()) {
-                        lines.push('');
-                        lines.push(result.stdout);
-                    }
-                    if (result.stderr) {
-                        lines.push('');
-                        lines.push(`📋 日志：${result.stderr}`);
-                    }
-                    return ok(lines.join('\n'));
+                    return ok(formatSuccess(lines, result));
                 }
 
                 // 失败，记录原因
@@ -184,14 +291,7 @@ export function registerTaskRouteTool(pi: ExtensionAPI): void {
             }
 
             // 所有档位都失败
-            lines.push('');
-            lines.push('❌ 所有可用档位均执行失败。');
-            lines.push('建议：');
-            lines.push('1. 检查模型 API 配置是否正常');
-            lines.push('2. 缩小任务范围（减少上下文文件）');
-            lines.push('3. 手动使用 `raccoon_model_scan` 和 `raccoon_model_config` 配置模型档位');
-
-            return fail(lines.join('\n'));
+            return fail(lines.join('\n') + formatAllFailed());
         },
     });
 }
