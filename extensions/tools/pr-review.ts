@@ -197,6 +197,8 @@ export function registerPrReviewTool(pi: ExtensionAPI): void {
                         const taskIds = new Map<string, string>();
                         const reviewResult = await runParallelReview(cwd, agentList, diffContent, {
                             signal,
+                            heartbeatMs: 300_000,
+                            maxHeartbeats: 2,
                             onUpdate: (agentName, chunk) => {
                                 if (onUpdate) {
                                     onUpdate({
