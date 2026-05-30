@@ -1,6 +1,6 @@
 /**
- * Git 工作流工具 — 注册 7 个 LLM 可调用工具，
- * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并、测试运行全流程。
+ * Git 工作流工具 — 注册 9 个 LLM 可调用工具，
+ * 提供安全的、带校验的分支管理、提交、推送、PR 创建、审核、合并、测试运行、Issue 管理全流程。
  */
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -791,6 +791,217 @@ export function registerGitWorkflowTools(pi: ExtensionAPI): void {
                     '暂不支持通过工具自动合并 Gitee PR。\n' +
                         '请前往 Gitee 网站手动合并 Pull Request。',
                 );
+            }
+
+            return fail(
+                `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
+                    '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
+            );
+        },
+    });
+
+    // ════════════════════════════════════════════════════════
+    // 8. raccoon_issue_create
+    // ════════════════════════════════════════════════════════
+
+    pi.registerTool({
+        name: 'raccoon_issue_create',
+        label: 'Issue Create',
+        description: '创建 Git Issue。支持 GitHub (gh)、GitLab (glab)。',
+        parameters: Type.Object({
+            title: Type.String({ description: 'Issue 标题' }),
+            body: Type.String({ description: 'Issue 描述' }),
+            labels: Type.Optional(
+                Type.Array(Type.String(), { description: '标签列表（可选）' }),
+            ),
+        }),
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            const cwd = ctx.cwd;
+
+            if (!(await isGitWorkTree(pi, cwd))) {
+                return fail('当前目录不是 Git 仓库。');
+            }
+
+            const { host } = await detectGitHost(pi, cwd);
+
+            if (host === 'github') {
+                const ghCheck = await pi.exec('gh', ['--version'], { cwd, timeout: 3_000 });
+                if (ghCheck.code !== 0) {
+                    return fail(
+                        '未检测到 gh CLI。\n' +
+                            '安装：brew install gh（macOS）或 https://cli.github.com/\n' +
+                            '安装后需登录：gh auth login',
+                    );
+                }
+
+                const args = ['issue', 'create', '--title', params.title, '--body', params.body];
+                if (params.labels && params.labels.length > 0) {
+                    for (const label of params.labels) {
+                        args.push('--label', label);
+                    }
+                }
+
+                const result = await pi.exec('gh', args, { cwd, timeout: 15_000 });
+                if (result.code !== 0) {
+                    return fail(`创建 Issue 失败：${result.stderr || result.stdout}`);
+                }
+                return ok(`✅ Issue 创建成功\n${result.stdout.trim()}`);
+            }
+
+            if (host === 'gitlab') {
+                const glabCheck = await pi.exec('glab', ['--version'], { cwd, timeout: 3_000 });
+                if (glabCheck.code !== 0) {
+                    return fail(
+                        '未检测到 glab CLI。\n' +
+                            '安装：brew install glab（macOS）或 https://glab.readthedocs.io/\n' +
+                            '安装后需登录：glab auth login',
+                    );
+                }
+
+                const args = ['issue', 'create', '--title', params.title, '--description', params.body];
+                if (params.labels && params.labels.length > 0) {
+                    for (const label of params.labels) {
+                        args.push('--label', label);
+                    }
+                }
+
+                const result = await pi.exec('glab', args, { cwd, timeout: 15_000 });
+                if (result.code !== 0) {
+                    return fail(`创建 Issue 失败：${result.stderr || result.stdout}`);
+                }
+                return ok(`✅ Issue 创建成功\n${result.stdout.trim()}`);
+            }
+
+            if (host === 'gitee') {
+                return fail(
+                    '暂不支持通过工具自动创建 Gitee Issue。\n' +
+                        '请前往 Gitee 网站手动创建 Issue。',
+                );
+            }
+
+            return fail(
+                `无法识别 Git 托管平台（检测到的 remote 平台：${host}）。\n` +
+                    '目前支持 GitHub（gh CLI）和 GitLab（glab CLI）。',
+            );
+        },
+    });
+
+    // ════════════════════════════════════════════════════════
+    // 9. raccoon_issue_list
+    // ════════════════════════════════════════════════════════
+
+    pi.registerTool({
+        name: 'raccoon_issue_list',
+        label: 'Issue List',
+        description: '列出最近的开放 Issue。支持 GitHub (gh)、GitLab (glab)。',
+        parameters: Type.Object({
+            limit: Type.Optional(
+                Type.Number({ description: '返回数量，默认 10' }),
+            ),
+            label: Type.Optional(
+                Type.String({ description: '按标签筛选（可选）' }),
+            ),
+        }),
+        async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+            const cwd = ctx.cwd;
+            const limit = params.limit ?? 10;
+
+            if (!(await isGitWorkTree(pi, cwd))) {
+                return fail('当前目录不是 Git 仓库。');
+            }
+
+            const { host } = await detectGitHost(pi, cwd);
+
+            if (host === 'github') {
+                const ghCheck = await pi.exec('gh', ['--version'], { cwd, timeout: 3_000 });
+                if (ghCheck.code !== 0) {
+                    return fail('未检测到 gh CLI。');
+                }
+
+                const args = ['issue', 'list', '--state', 'open', '--limit', String(limit), '--json', 'number,title,labels,url'];
+                if (params.label) {
+                    args.push('--label', params.label);
+                }
+
+                const result = await pi.exec('gh', args, { cwd, timeout: 10_000 });
+                if (result.code !== 0) {
+                    return fail(`查询 Issue 失败：${result.stderr || result.stdout}`);
+                }
+
+                interface GhIssue {
+                    number: number;
+                    title: string;
+                    labels: Array<{ name: string }>;
+                    url: string;
+                }
+
+                let issues: GhIssue[];
+                try {
+                    issues = JSON.parse(result.stdout);
+                } catch {
+                    return fail('解析 Issue 列表失败。');
+                }
+
+                if (issues.length === 0) {
+                    return ok('📭 当前没有开放的 Issue。');
+                }
+
+                const lines: string[] = [];
+                lines.push(`## 开放 Issue（共 ${issues.length} 条）`);
+                for (const issue of issues) {
+                    const labels = issue.labels.map(l => l.name).join(', ');
+                    lines.push(`- #${issue.number} ${issue.title}${labels ? ` [${labels}]` : ''}`);
+                    lines.push(`  ${issue.url}`);
+                }
+                return ok(lines.join('\n'));
+            }
+
+            if (host === 'gitlab') {
+                const glabCheck = await pi.exec('glab', ['--version'], { cwd, timeout: 3_000 });
+                if (glabCheck.code !== 0) {
+                    return fail('未检测到 glab CLI。');
+                }
+
+                const args = ['issue', 'list', '--state', 'opened', '--per-page', String(limit), '--output', 'json'];
+                if (params.label) {
+                    args.push('--label', params.label);
+                }
+
+                const result = await pi.exec('glab', args, { cwd, timeout: 10_000 });
+                if (result.code !== 0) {
+                    return fail(`查询 Issue 失败：${result.stderr || result.stdout}`);
+                }
+
+                interface GlIssue {
+                    iid: number;
+                    title: string;
+                    labels: string[];
+                    web_url: string;
+                }
+
+                let issues: GlIssue[];
+                try {
+                    issues = JSON.parse(result.stdout);
+                } catch {
+                    return fail('解析 Issue 列表失败。');
+                }
+
+                if (!Array.isArray(issues) || issues.length === 0) {
+                    return ok('📭 当前没有开放的 Issue。');
+                }
+
+                const lines: string[] = [];
+                lines.push(`## 开放 Issue（共 ${issues.length} 条）`);
+                for (const issue of issues) {
+                    const labels = issue.labels?.join(', ') ?? '';
+                    lines.push(`- #${issue.iid} ${issue.title}${labels ? ` [${labels}]` : ''}`);
+                    lines.push(`  ${issue.web_url}`);
+                }
+                return ok(lines.join('\n'));
+            }
+
+            if (host === 'gitee') {
+                return fail('暂不支持通过工具查询 Gitee Issue。');
             }
 
             return fail(

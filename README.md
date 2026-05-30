@@ -69,6 +69,8 @@ staged 0  unstaged 0  untracked 0  conflicts 0   raccoon-agents  anthropic/claud
 | `raccoon_feature_new` | 基于 `main` 创建 feature 分支（自动加 `feat/` 前缀），自动检查工作区是否干净 |
 | `raccoon_git_commit` | 暂存变更并提交，支持 conventional commits 格式，可指定暂存文件 |
 | `raccoon_git_push` | 推送当前分支到 origin，自动设置 upstream，禁止直接推 main |
+| `raccoon_issue_create` | 创建 Git Issue，支持标题、描述和标签，自动适配平台 |
+| `raccoon_issue_list` | 列出最近的开放 Issue，支持按标签筛选 |
 | `raccoon_pr_create` | 创建 Pull Request / Merge Request，自动检测平台（GitHub `gh` / GitLab `glab`） |
 
 ### 3. 工作流 Prompt 注入
@@ -212,7 +214,7 @@ npm start
 -   [ ] 自动测试运行与质量门禁
 -   [ ] PR 自动合并
 -   [x] 支持多种 Git 托管平台（GitLab `glab` / Gitee 提示）
--   [ ] 需求 → Issue 自动转换
+-   [x] 需求 → Issue 自动转换（`raccoon_issue_create` / `raccoon_issue_list`）
 -   [ ] Issue 智能任务拆分
 -   [ ] 多模型任务分配与并行编排
 
