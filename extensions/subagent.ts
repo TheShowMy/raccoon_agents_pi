@@ -37,8 +37,10 @@ export interface ParallelReviewResult {
 }
 
 export interface ParallelReviewOptions {
-    /** 单个子进程超时（毫秒），默认 60000 */
-    timeout?: number;
+    /** 心跳周期（毫秒），默认 300000（5 分钟）。每个周期结束时检查是否有活动输出，有则自动延长 */
+    heartbeatMs?: number;
+    /** 最大心跳次数，默认 2（初始 5 分钟 + 最多 2 次延长 = 最多 15 分钟） */
+    maxHeartbeats?: number;
     /** 最大并发数，默认 3 */
     concurrency?: number;
     /** 流式进度回调 */
@@ -152,7 +154,8 @@ async function runSingleAgent(
         timedOut: false,
     };
 
-    const timeoutMs = options?.timeout ?? 60_000;
+    const heartbeatMs = options?.heartbeatMs ?? 300_000;
+    const maxHeartbeats = options?.maxHeartbeats ?? 2;
     const args: string[] = ["--mode", "json", "-p", "--no-session"];
     if (agent.model) args.push("--model", agent.model);
 
@@ -171,10 +174,10 @@ async function runSingleAgent(
         args.push(`Task: ${task}`);
 
         const invocation = getPiInvocation(args);
-        const { exitCode, stdout, stderr, timedOut } = await spawnWithTimeout(
+        const { exitCode, stdout, stderr, timedOut, heartbeatsUsed } = await spawnWithTimeout(
             invocation.command,
             invocation.args,
-            { cwd, timeout: timeoutMs, signal: options?.signal },
+            { cwd, heartbeatMs, maxHeartbeats, signal: options?.signal },
             (chunk) => {
                 // 流式解析 JSON 行，提取 assistant 消息文本
                 try {
@@ -202,6 +205,9 @@ async function runSingleAgent(
         result.exitCode = exitCode;
         result.timedOut = timedOut;
         result.stderr += stderr;
+        if (heartbeatsUsed > 0) {
+            result.stderr += `\n[info: 心跳延长 ${heartbeatsUsed} 次，总等待 ${(heartbeatsUsed + 1) * (heartbeatMs / 60000)} 分钟]`;
+        }
     } finally {
         if (tmpPromptPath) {
             try { unlinkSync(tmpPromptPath); } catch { /* ignore */ }
@@ -215,19 +221,30 @@ async function runSingleAgent(
 }
 
 /**
- * 带超时的子进程执行，支持流式输出
+ * 心跳超时子进程执行
+ *
+ * 机制：
+ * 1. 基础周期 5 分钟（可配置），超时前检查进程是否还有输出
+ * 2. 如果最近一个周期内有 stdout/stderr 活动 → 自动延长一个周期（心跳）
+ * 3. 最多延长 N 次（默认 2 次），总等待 = (N+1) × 周期
+ * 4. 如果某个周期内完全无活动 → 认为卡死，立即 kill
+ *
+ * 这确保了真正的长任务可以完成，而卡死的进程不会无限等待。
  */
 function spawnWithTimeout(
     command: string,
     args: string[],
-    options: { cwd: string; timeout: number; signal?: AbortSignal },
+    options: { cwd: string; heartbeatMs: number; maxHeartbeats: number; signal?: AbortSignal },
     onLine: (line: string) => void,
-): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean }> {
+): Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean; heartbeatsUsed: number }> {
     return new Promise((resolve) => {
         let stdout = "";
         let stderr = "";
         let buffer = "";
         let timedOut = false;
+        let heartbeatsUsed = 0;
+        let lastActivity = Date.now();
+        let timeoutTimer: ReturnType<typeof setTimeout> | null = null;
 
         const proc = spawn(command, args, {
             cwd: options.cwd,
@@ -243,9 +260,29 @@ function spawnWithTimeout(
             }, 5000);
         };
 
-        const timeoutTimer = setTimeout(() => killProc(true), options.timeout);
+        const resetTimer = () => {
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            timeoutTimer = setTimeout(onHeartbeat, options.heartbeatMs);
+        };
+
+        const onHeartbeat = () => {
+            const idleMs = Date.now() - lastActivity;
+
+            // 如果最近一个周期内有活动，且心跳次数未用完 → 延长
+            if (idleMs < options.heartbeatMs && heartbeatsUsed < options.maxHeartbeats) {
+                heartbeatsUsed++;
+                resetTimer();
+                return;
+            }
+
+            // 真正超时：要么无活动了（卡死），要么心跳次数用完了
+            killProc(true);
+        };
+
+        resetTimer();
 
         proc.stdout.on("data", (data) => {
+            lastActivity = Date.now();
             stdout += data.toString();
             buffer += data.toString();
             const lines = buffer.split("\n");
@@ -256,24 +293,28 @@ function spawnWithTimeout(
         });
 
         proc.stderr.on("data", (data) => {
+            lastActivity = Date.now();
             stderr += data.toString();
         });
 
         proc.on("close", (code) => {
-            clearTimeout(timeoutTimer);
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            timeoutTimer = null;
             if (buffer.trim()) onLine(buffer);
-            resolve({ exitCode: code ?? 0, stdout, stderr, timedOut });
+            resolve({ exitCode: code ?? 0, stdout, stderr, timedOut, heartbeatsUsed });
         });
 
         proc.on("error", (err) => {
-            clearTimeout(timeoutTimer);
+            if (timeoutTimer) clearTimeout(timeoutTimer);
+            timeoutTimer = null;
             stderr += err.message;
-            resolve({ exitCode: 1, stdout, stderr, timedOut });
+            resolve({ exitCode: 1, stdout, stderr, timedOut, heartbeatsUsed });
         });
 
         if (options.signal) {
             const onAbort = () => {
-                clearTimeout(timeoutTimer);
+                if (timeoutTimer) clearTimeout(timeoutTimer);
+                timeoutTimer = null;
                 killProc(false);
             };
             if (options.signal.aborted) onAbort();
@@ -489,7 +530,7 @@ export function formatParallelReviewReport(result: ParallelReviewResult): string
         lines.push(`${icon} **${r.agent}** ${r.model ? `(${r.model})` : ""}`);
 
         if (r.timedOut) {
-            lines.push(`  执行超时（可能模型响应过慢或任务过大）`);
+            lines.push(`  执行超时（任务过大或模型无响应）`);
         } else if (r.exitCode !== 0) {
             lines.push(`  执行失败（退出码 ${r.exitCode}）`);
             if (r.stderr) {
