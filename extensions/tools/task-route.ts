@@ -7,7 +7,7 @@
  * 3. 文件上下文自动校验，防止目录遍历
  */
 
-import { resolve, normalize, sep } from 'node:path';
+import { normalize, sep } from 'node:path';
 import { Type } from 'typebox';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { runSingleAgent, type AgentConfig, type SingleResult } from '../subagent.js';
@@ -274,10 +274,7 @@ export function registerTaskRouteTool(pi: ExtensionAPI): void {
                 }
 
                 // 失败，记录原因
-                lines.push(`❌ ${tier} 档执行失败：${result.timedOut ? '超时' : `退出码 ${result.exitCode}`}`);
-                if (result.stderr) {
-                    lines.push(`   stderr: ${result.stderr.slice(0, 300)}`);
-                }
+                formatFailure(lines, result, tier);
 
                 if (!fallback) {
                     break;

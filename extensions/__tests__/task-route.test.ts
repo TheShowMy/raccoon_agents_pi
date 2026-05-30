@@ -101,7 +101,7 @@ describe('formatSuccess', () => {
         expect(result).toContain('[info: 心跳延长 1 次]');
     });
 
-    it('stdout 为空时不输出空块', () => {
+    it('stdout 为空白且 stderr 为空时不输出额外空块', () => {
         const result = formatSuccess(['🎯 路由'], { exitCode: 0, stdout: '  ', stderr: '' } as any);
         expect(result).toContain('✅ 任务执行成功');
         expect(result).not.toContain('📋 日志');
