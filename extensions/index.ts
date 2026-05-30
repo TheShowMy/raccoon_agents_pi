@@ -299,7 +299,16 @@ async function ensureGitRepository(pi: ExtensionAPI, ctx: ExtensionContext): Pro
     return initializeGitRepository(pi, ctx);
 }
 
+/** 检测当前是否运行在 subagent 子进程中 */
+const isSubagentMode = process.env.PI_SUBAGENT_MODE === '1';
+
 export default function raccoonAgents(pi: ExtensionAPI) {
+    // 子 agent 模式：不注册任何工具、不注入 system prompt、不安装 TUI
+    // 避免递归加载和上下文污染
+    if (isSubagentMode) {
+        return;
+    }
+
     pi.on('tool_execution_end', () => {
         gitFooterController?.scheduleRefresh();
     });
