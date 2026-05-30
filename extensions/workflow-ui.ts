@@ -33,16 +33,16 @@ interface StepInfo {
 }
 
 const WORKFLOW_STEPS: StepInfo[] = [
-    { key: 'clarify', label: '需求澄清', icon: '💬' },
-    { key: 'issue', label: '创建 Issue', icon: '📝' },
-    { key: 'branch', label: '创建分支', icon: '🌿' },
-    { key: 'code', label: '编码实现', icon: '💻' },
-    { key: 'verify', label: '验证测试', icon: '✅' },
-    { key: 'commit', label: '提交代码', icon: '💾' },
-    { key: 'push', label: '推送分支', icon: '🚀' },
-    { key: 'pr-create', label: '创建 PR', icon: '🔀' },
-    { key: 'review', label: '代码审核', icon: '👀' },
-    { key: 'merge', label: '合并代码', icon: '🏁' },
+    { key: 'clarify', label: '需求澄清', icon: '1' },
+    { key: 'issue', label: '创建 Issue', icon: '2' },
+    { key: 'branch', label: '创建分支', icon: '3' },
+    { key: 'code', label: '编码实现', icon: '4' },
+    { key: 'verify', label: '验证测试', icon: '5' },
+    { key: 'commit', label: '提交代码', icon: '6' },
+    { key: 'push', label: '推送分支', icon: '7' },
+    { key: 'pr-create', label: '创建 PR', icon: '8' },
+    { key: 'review', label: '代码审核', icon: '9' },
+    { key: 'merge', label: '合并代码', icon: '0' },
 ];
 
 // 工具名到阶段的映射
